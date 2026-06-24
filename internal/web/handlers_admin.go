@@ -96,6 +96,80 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// categoryMessages maps a ?msg=<code> query value to a flash message + CSS class.
+var categoryMessages = map[string][2]string{
+	"renamed": {"Категория переименована", "notice"},
+	"deleted": {"Категория удалена", "notice"},
+	"dup":     {"Категория с таким названием уже существует", "error"},
+	"inuse":   {"Нельзя удалить категорию, пока в ней есть рецепты", "error"},
+	"empty":   {"Название не может быть пустым", "error"},
+}
+
+// handleAdminCategories lists categories with their recipe counts for the
+// reference-management section.
+func (s *Server) handleAdminCategories(w http.ResponseWriter, r *http.Request) {
+	cats, err := s.store.ListCategories(r.Context())
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	data := s.newPageData(r)
+	data["Title"] = "Категории"
+	data["Categories"] = cats
+	if m, ok := categoryMessages[r.URL.Query().Get("msg")]; ok {
+		data["Message"] = m[0]
+		data["MessageClass"] = m[1]
+	}
+	s.render(w, r, "admin_categories", http.StatusOK, data)
+}
+
+// handleCategoryRename renames a category, guarding against duplicates.
+func (s *Server) handleCategoryRename(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if name == "" {
+		http.Redirect(w, r, "/admin/categories?msg=empty", http.StatusSeeOther)
+		return
+	}
+	switch err := s.store.RenameCategory(r.Context(), id, name); {
+	case errors.Is(err, store.ErrDuplicate):
+		http.Redirect(w, r, "/admin/categories?msg=dup", http.StatusSeeOther)
+	case errors.Is(err, store.ErrNotFound):
+		http.NotFound(w, r)
+	case err != nil:
+		s.serverError(w, err)
+	default:
+		http.Redirect(w, r, "/admin/categories?msg=renamed", http.StatusSeeOther)
+	}
+}
+
+// handleCategoryDelete deletes an unused category.
+func (s *Server) handleCategoryDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	switch err := s.store.DeleteCategory(r.Context(), id); {
+	case errors.Is(err, store.ErrCategoryInUse):
+		http.Redirect(w, r, "/admin/categories?msg=inuse", http.StatusSeeOther)
+	case errors.Is(err, store.ErrNotFound):
+		http.NotFound(w, r)
+	case err != nil:
+		s.serverError(w, err)
+	default:
+		http.Redirect(w, r, "/admin/categories?msg=deleted", http.StatusSeeOther)
+	}
+}
+
 // handleAdminRecipes lists recipes for management.
 func (s *Server) handleAdminRecipes(w http.ResponseWriter, r *http.Request) {
 	recipes, err := s.store.ListRecipes(r.Context(), nil, 0, 0)

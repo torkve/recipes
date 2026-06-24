@@ -136,6 +136,11 @@ body {
 
 /* Admin: recipe management table */
 .list-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.head-actions { display: flex; align-items: center; gap: 1rem; }
+.notice { color: #1b6e2e; }
+.muted-note { color: var(--muted); font-size: 0.9rem; }
+.rename-form { display: flex; gap: 0.4rem; align-items: center; }
+.rename-form input { padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; }
 .admin-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 .admin-table th, .admin-table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 .row-actions { display: flex; gap: 0.75rem; align-items: center; white-space: nowrap; }

@@ -1,0 +1,38 @@
+{{define "content"}}
+<section>
+  <div class="list-head">
+    <h1>Категории</h1>
+    <a href="/admin/recipes">← Рецепты</a>
+  </div>
+
+  {{if .Message}}<p class="{{.MessageClass}}">{{.Message}}</p>{{end}}
+
+  <table class="admin-table">
+    <thead><tr><th>Название</th><th>Рецептов</th><th></th></tr></thead>
+    <tbody>
+      {{range .Categories}}
+      <tr>
+        <td>
+          <form class="inline rename-form" method="post" action="/admin/categories/{{.ID}}/rename">
+            {{$.CSRFField}}
+            <input type="text" name="name" value="{{.Name}}" aria-label="Название категории" required>
+            <button type="submit" class="btn-link">Сохранить</button>
+          </form>
+        </td>
+        <td>{{.RecipeCount}}</td>
+        <td class="row-actions">
+          {{if eq .RecipeCount 0}}
+          <form class="inline" method="post" action="/admin/categories/{{.ID}}/delete" onsubmit="return confirm('Удалить категорию «{{.Name}}»?');">
+            {{$.CSRFField}}
+            <button type="submit" class="btn-link btn-danger-link">Удалить</button>
+          </form>
+          {{else}}
+          <span class="muted-note">используется</span>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

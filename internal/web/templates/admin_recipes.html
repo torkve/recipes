@@ -2,7 +2,10 @@
 <section>
   <div class="list-head">
     <h1>Управление рецептами</h1>
-    <a class="btn" href="/admin/recipes/new">+ Новый рецепт</a>
+    <div class="head-actions">
+      <a href="/admin/categories">Категории</a>
+      <a class="btn" href="/admin/recipes/new">+ Новый рецепт</a>
+    </div>
   </div>
 
   {{if .Recipes}}

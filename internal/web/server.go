@@ -102,6 +102,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/recipes/{id}", s.requireAuth(s.handleRecipeUpdate))
 	mux.HandleFunc("POST /admin/recipes/{id}/delete", s.requireAuth(s.handleRecipeDelete))
 
+	// Admin: category (reference) management.
+	mux.HandleFunc("GET /admin/categories", s.requireAuth(s.handleAdminCategories))
+	mux.HandleFunc("POST /admin/categories/{id}/rename", s.requireAuth(s.handleCategoryRename))
+	mux.HandleFunc("POST /admin/categories/{id}/delete", s.requireAuth(s.handleCategoryDelete))
+
 	// Embedded static assets.
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))

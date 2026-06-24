@@ -1,0 +1,23 @@
+services:
+  recipes:
+    build: .
+    image: recipes:latest
+    container_name: recipes
+    restart: unless-stopped
+    ports:
+      - "${RECIPES_PORT:-8080}:8080"
+    environment:
+      # First-run admin bootstrap (required). Set these in a local .env file.
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?set ADMIN_USERNAME in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      RECIPES_SITE_NAME: ${RECIPES_SITE_NAME:-Семейная кулинарная книга}
+      # Set true when serving over HTTPS (behind a TLS proxy).
+      RECIPES_SECURE_COOKIES: ${RECIPES_SECURE_COOKIES:-false}
+      # iCloud Notes sync (off by default; requires Apple ID + 2FA at runtime).
+      RECIPES_ICLOUD_ENABLED: ${RECIPES_ICLOUD_ENABLED:-false}
+      RECIPES_ICLOUD_PULL_MINUTES: ${RECIPES_ICLOUD_PULL_MINUTES:-15}
+    volumes:
+      - recipes-data:/data
+
+volumes:
+  recipes-data:

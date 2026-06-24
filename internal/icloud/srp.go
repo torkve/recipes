@@ -96,9 +96,9 @@ type srpOptions struct {
 
 // srpVariants are the candidate conventions, selected by index via config
 // (RECIPES_ICLOUD_SRP_VARIANT). Apple throttles repeated sign-in attempts, so we
-// try only one per bind; index 1 is the default (pyicloud-style: rfc5054 padding
-// + no_username_in_x, which makes x = H(salt | H(":" | dk))). Index 0 has been
-// observed to return 401 against at least one account.
+// try only one per bind; index 1 is the default and is confirmed working against
+// a real account (pyicloud-style: rfc5054 padding + no_username_in_x, which makes
+// x = H(salt | H(":" | dk))). Index 0 returns 401.
 var srpVariants = []srpOptions{
 	{xHashSalt, true},       // 0
 	{xHashSaltColon, true},  // 1 (default)

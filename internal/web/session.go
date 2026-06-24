@@ -89,7 +89,10 @@ func newSessionStore(dir string, authKey, encKey []byte, secure bool) *sessions.
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	}
-	// Keep encoded session bytes well under the 4KB cookie limit (we only store a uid).
-	st.MaxLength(4096)
+	// FilesystemStore keeps session values in a file on disk (only the session id
+	// is in the browser cookie), so this limit guards the on-disk record, not the
+	// cookie. Allow enough room for the iCloud 2FA continuation (the captured
+	// idmsa session: scnt, tokens and cookies — several KB).
+	st.MaxLength(1 << 20)
 	return st
 }

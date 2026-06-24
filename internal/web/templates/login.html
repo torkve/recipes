@@ -1,0 +1,16 @@
+{{define "content"}}
+<section class="auth">
+  <h1>Вход</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form class="form" method="post" action="/admin/login">
+    {{.CSRFField}}
+    <label>Логин
+      <input type="text" name="username" value="{{.Username}}" autocomplete="username" autofocus required>
+    </label>
+    <label>Пароль
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="btn">Войти</button>
+  </form>
+</section>
+{{end}}

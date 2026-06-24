@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"recipes/internal/auth"
 	"recipes/internal/config"
 	"recipes/internal/store"
+	"recipes/internal/web"
 )
 
 func main() {
@@ -41,22 +43,32 @@ func run() error {
 	}
 	defer st.Close()
 
-	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), 30*time.Second)
-	err = st.Migrate(migrateCtx)
-	cancelMigrate()
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelSetup()
+
+	if err := st.Migrate(setupCtx); err != nil {
+		return err
+	}
+
+	// Bootstrap the first admin account from the environment, if configured.
+	if err := auth.BootstrapAdmin(setupCtx, st, cfg.AdminUsername, cfg.AdminPassword); err != nil {
+		return err
+	}
+
+	// Load (or generate and persist) session/CSRF secret keys.
+	keys, err := auth.LoadOrCreateKeys(cfg.KeysPath())
 	if err != nil {
 		return err
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("ok"))
-	})
+	srvHandler, err := web.NewServer(cfg, st, keys)
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           mux,
+		Handler:           srvHandler.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -1,0 +1,29 @@
+{{define "base"}}<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}} — {{end}}{{.SiteName}}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/" aria-label="На главную">
+      <span class="logo-mark" aria-hidden="true">🍲</span>
+      <span class="site-name">{{.SiteName}}</span>
+    </a>
+    <nav class="header-actions">
+      {{if .User}}
+        <a class="btn" href="/admin/recipes/new">Добавить рецепт</a>
+        <form class="inline" method="post" action="/admin/logout">{{.CSRFField}}<button type="submit" class="btn btn-link">Выйти ({{.User.Username}})</button></form>
+      {{else}}
+        <a class="btn" href="/admin/login">Вход</a>
+      {{end}}
+    </nav>
+  </header>
+  <main class="container">
+    {{block "content" .}}{{end}}
+  </main>
+  <footer class="site-footer"><small>{{.SiteName}}</small></footer>
+</body>
+</html>{{end}}

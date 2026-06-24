@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"reflect"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -130,6 +131,50 @@ func TestParseNoteBodyInlineImage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(imgs, []string{"IMG-AAA"}) {
 		t.Fatalf("imageIDs=%v want [IMG-AAA]", imgs)
+	}
+}
+
+// A "hero" image at the very top of the note sits in the title paragraph (which
+// groupParagraphs skips). Its marker must still be preserved into steps and the
+// id reported, otherwise the whole resolve/download chain never runs.
+func TestParseNoteBodyTopImagePreserved(t *testing.T) {
+	text := "￼\nБрамбораки\nНатереть картофель\n"
+	runs := []noteRun{
+		{length: 1, styleType: 0, attachID: "HERO-1", attachUTI: "public.jpeg"}, // image
+		{length: len([]rune("\nБрамбораки\n")), styleType: 0},                    // title line
+		{length: len([]rune("Натереть картофель\n")), styleType: -1},            // step
+	}
+	_, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if !reflect.DeepEqual(imgs, []string{"HERO-1"}) {
+		t.Fatalf("imageIDs=%v want [HERO-1]", imgs)
+	}
+	if !strings.Contains(steps, "@@IMG:HERO-1@@") {
+		t.Fatalf("top image marker not preserved in steps: %q", steps)
+	}
+}
+
+// An image in an ingredient (checklist) line must also be preserved into steps
+// rather than stripped, and reported.
+func TestParseNoteBodyIngredientImagePreserved(t *testing.T) {
+	text := "Торт\nкорж ￼\nИспечь\n"
+	runs := []noteRun{
+		{length: len([]rune("Торт\n")), styleType: 0},
+		{length: len([]rune("корж ")), styleType: 103},
+		{length: 1, styleType: 103, attachID: "ING-1", attachUTI: "public.png"},
+		{length: len([]rune("\nИспечь\n")), styleType: -1},
+	}
+	_, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if !reflect.DeepEqual(imgs, []string{"ING-1"}) {
+		t.Fatalf("imageIDs=%v want [ING-1]", imgs)
+	}
+	if !strings.Contains(steps, "@@IMG:ING-1@@") {
+		t.Fatalf("ingredient image marker not preserved: %q", steps)
 	}
 }
 

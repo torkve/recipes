@@ -168,14 +168,27 @@ func parseNoteBody(blob []byte) (ingredientBlocks [][]string, steps string, imag
 	if !ok {
 		return nil, "", nil, false
 	}
+
+	// Every inline image must survive into the steps body. groupParagraphs keeps
+	// markers that fall in step paragraphs but drops those in the title (first
+	// paragraph) or ingredient lines — common for a "hero" image at the top of a
+	// note. Collect all image ids in document order (deduped) and prepend any
+	// whose marker didn't make it into steps, so none are lost.
 	seen := map[string]bool{}
-	for _, m := range imgTokenRE.FindAllString(steps, -1) {
-		id := strings.TrimSuffix(strings.TrimPrefix(m, "@@IMG:"), "@@")
+	var missing []string
+	for pos := 0; pos < len(runes); pos++ {
+		id := attachAt[pos]
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
 		imageIDs = append(imageIDs, id)
+		if !strings.Contains(steps, imgToken(id)) {
+			missing = append(missing, imgToken(id))
+		}
+	}
+	if len(missing) > 0 {
+		steps = strings.TrimSpace(strings.Join(missing, "\n") + "\n" + steps)
 	}
 	return blocks, steps, imageIDs, true
 }

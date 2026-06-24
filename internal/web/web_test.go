@@ -219,6 +219,13 @@ func TestScenarioMemberAddsRecipeAndCategory(t *testing.T) {
 		t.Fatalf("new category was not created: %v", err)
 	}
 	home := getPage(t, c, ts.URL+"/")
+	// A logged-in member sees the admin links in the account dropdown on the
+	// main page (guests do not — see TestScenarioGuestSearch).
+	for _, href := range []string{`href="/admin/recipes"`, `href="/admin/categories"`, `href="/admin/recipes/new"`} {
+		if !strings.Contains(home, href) {
+			t.Errorf("logged-in main page missing admin link %s", href)
+		}
+	}
 	chip := `data-cat="` + strconv.FormatInt(cat.ID, 10) + `">Десерты</a>`
 	if !strings.Contains(home, chip) {
 		t.Error("new category not shown as a filter chip on the catalog")

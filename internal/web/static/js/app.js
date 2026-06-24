@@ -52,3 +52,36 @@
     });
   });
 })();
+
+// Header account dropdown: toggle the admin links menu. No-op when absent.
+(function () {
+  "use strict";
+
+  var menu = document.getElementById("account-menu");
+  if (!menu) return;
+
+  var toggle = menu.querySelector(".menu-toggle");
+  var panel = menu.querySelector(".menu-panel");
+  if (!toggle || !panel) return;
+
+  function setOpen(open) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    panel.hidden = !open;
+  }
+
+  toggle.addEventListener("click", function (e) {
+    e.stopPropagation();
+    setOpen(panel.hidden);
+  });
+
+  document.addEventListener("click", function (e) {
+    if (!menu.contains(e.target)) setOpen(false);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !panel.hidden) {
+      setOpen(false);
+      toggle.focus();
+    }
+  });
+})();

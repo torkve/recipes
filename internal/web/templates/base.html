@@ -15,8 +15,16 @@
     </a>
     <nav class="header-actions">
       {{if .User}}
-        <a class="btn" href="/admin/recipes/new">Добавить рецепт</a>
-        <form class="inline" method="post" action="/admin/logout">{{.CSRFField}}<button type="submit" class="btn btn-link">Выйти ({{.User.Username}})</button></form>
+        <div class="menu" id="account-menu">
+          <button type="button" class="btn menu-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="account-menu-panel">👤 {{.User.Username}}</button>
+          <div class="menu-panel" id="account-menu-panel" role="menu" hidden>
+            <a class="menu-item" role="menuitem" href="/admin/recipes/new">Добавить рецепт</a>
+            <a class="menu-item" role="menuitem" href="/admin/recipes">Управление рецептами</a>
+            <a class="menu-item" role="menuitem" href="/admin/categories">Категории</a>
+            {{if .ICloudEnabled}}<a class="menu-item" role="menuitem" href="/admin/sync">iCloud-синхронизация</a>{{end}}
+            <form class="inline menu-item-form" method="post" action="/admin/logout">{{.CSRFField}}<button type="submit" class="menu-item btn-link" role="menuitem">Выйти</button></form>
+          </div>
+        </div>
       {{else}}
         <a class="btn" href="/admin/login">Вход</a>
       {{end}}

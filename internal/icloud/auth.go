@@ -11,6 +11,9 @@ import (
 	"log"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
+
+	"github.com/google/uuid"
 
 	"recipes/internal/notesync"
 )
@@ -284,31 +287,70 @@ func (p *Provider) Complete(ctx context.Context, handle notesync.BindHandle, cod
 	return sess, nil
 }
 
-// finishLoginTokens runs setup.icloud.com/accountLogin and builds a Session.
+// finishLoginTokens runs setup.icloud.com/accountLogin (with the web client's
+// query params, so Apple issues the full X-APPLE-WEBAUTH-* + PCS cookie set that
+// CloudKit needs) and builds a Session.
 func (p *Provider) finishLoginTokens(ctx context.Context, sessionToken, trustToken, country string, cookies []SavedCookie) (*Session, error) {
 	body, err := buildAccountLoginBody(sessionToken, trustToken, country)
 	if err != nil {
 		return nil, err
 	}
-	respBody, resp, err := p.rawDo(ctx, http.MethodPost, setupBase+"/accountLogin", map[string]string{"Origin": oauthRedir}, body)
+	clientID := uuid.NewString()
+	q := url.Values{}
+	q.Set("clientBuildNumber", setupClientBuildNumber)
+	q.Set("clientMasteringNumber", setupClientMasteringNumber)
+	q.Set("clientId", clientID)
+
+	respBody, resp, err := p.rawDo(ctx, http.MethodPost, setupBase+"/accountLogin?"+q.Encode(),
+		map[string]string{"Origin": oauthRedir, "Referer": oauthRedir + "/"}, body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("icloud: accountLogin status %d", resp.StatusCode)
+		return nil, fmt.Errorf("icloud: accountLogin status %d: %s", resp.StatusCode, truncate(respBody))
 	}
 	dsid, services, err := parseAccountLogin(respBody)
 	if err != nil {
 		return nil, err
 	}
-	return &Session{
-		Cookies:        mergeCookies(cookies, saveCookies(resp)),
+
+	allCookies := mergeCookies(cookies, saveCookies(resp))
+	logCookieNames("accountLogin", allCookies)
+
+	sess := &Session{
+		Cookies:        allCookies,
 		SessionToken:   sessionToken,
 		TrustToken:     trustToken,
 		AccountCountry: country,
 		DSID:           dsid,
 		WebServices:    services,
-	}, nil
+		ClientID:       clientID,
+	}
+
+	// The web client fetches a session-id token after login; mirror it so the
+	// CloudKit-capable session/cookies are fully established (best-effort).
+	tq := url.Values{}
+	tq.Set("clientBuildNumber", setupClientBuildNumber)
+	tq.Set("clientMasteringNumber", setupClientMasteringNumber)
+	tq.Set("clientId", clientID)
+	tq.Set("dsid", dsid)
+	if _, tResp, tErr := p.rawDo(ctx, http.MethodGet, setupBase+"/generateSessionIdToken?"+tq.Encode(),
+		map[string]string{"Origin": oauthRedir, "Referer": oauthRedir + "/"}, nil); tErr == nil && tResp != nil {
+		sess.Cookies = mergeCookies(sess.Cookies, saveCookies(tResp))
+		logCookieNames("generateSessionIdToken", sess.Cookies)
+	}
+
+	return sess, nil
+}
+
+// logCookieNames logs the captured cookie names (never values) for diagnosing
+// whether the CloudKit-required cookies (…VALIDATE, …PCS-Notes) are present.
+func logCookieNames(stage string, cookies []SavedCookie) {
+	names := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		names = append(names, c.Name)
+	}
+	log.Printf("icloud: %s cookies: %v", stage, names)
 }
 
 // rawDo performs a request without treating 4xx as an error (callers inspect

@@ -217,11 +217,21 @@ func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byt
 	}
 	endpoint := fmt.Sprintf("%s/database/1/%s/%s/%s/%s", base, notesContainer, ckEnv, ckScope, op)
 	q := url.Values{}
+	q.Set("ckjsBuildVersion", ckjsBuildVersion)
+	q.Set("ckjsVersion", ckjsVersion)
+	q.Set("clientId", s.ClientID)
+	q.Set("clientBuildNumber", ckClientBuildNumber)
+	q.Set("clientMasteringNumber", ckClientMasteringNumber)
 	q.Set("dsid", s.DSID)
-	if s.CKToken != "" {
-		q.Set("ckjsBuildVersion", s.CKToken)
+
+	// CloudKit web auth is cookie-based; it expects text/plain and an icloud.com
+	// origin. Cookies (incl. X-APPLE-WEBAUTH-VALIDATE / PCS) are replayed by do().
+	headers := map[string]string{
+		"Content-Type": "text/plain",
+		"Origin":       oauthRedir,
+		"Referer":      oauthRedir + "/",
 	}
-	respBody, _, err := p.do(ctx, http.MethodPost, endpoint+"?"+q.Encode(), nil, body, s)
+	respBody, _, err := p.do(ctx, http.MethodPost, endpoint+"?"+q.Encode(), headers, body, s)
 	return respBody, err
 }
 

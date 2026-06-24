@@ -34,9 +34,11 @@ func TestRequestsIdentifyAsBrowser(t *testing.T) {
 type stubTransport struct {
 	folderQueryJSON string
 	modifyCalled    bool
+	lastURL         string
 }
 
 func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.lastURL = req.URL.String()
 	body := "{}"
 	switch {
 	case strings.Contains(req.URL.Path, "records/query"):
@@ -80,6 +82,21 @@ func TestEnsureFolderReusesExisting(t *testing.T) {
 	}
 	if f.ID != "F1" || f.Name != "Десерты" {
 		t.Fatalf("expected existing folder F1, got %+v", f)
+	}
+}
+
+func TestCloudKitQueryParams(t *testing.T) {
+	st := &stubTransport{folderQueryJSON: `{"records":[]}`}
+	p := New(&http.Client{Transport: st}, 1)
+	sess := &Session{DSID: "DS", ClientID: "CID", WebServices: map[string]string{"ckdatabasews": "https://ck.example"}}
+
+	if _, err := p.ListFolders(context.Background(), sess, "ROOT"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ckjsVersion=2.6.4", "clientId=CID", "dsid=DS", "ckjsBuildVersion=", "clientBuildNumber="} {
+		if !strings.Contains(st.lastURL, want) {
+			t.Fatalf("CloudKit query missing %q: %s", want, st.lastURL)
+		}
 	}
 }
 

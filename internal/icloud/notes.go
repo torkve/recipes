@@ -33,28 +33,28 @@ func (r ckRecord) referenceField(names ...string) string {
 	return ""
 }
 
-// recordToFolder maps a Folder record to a notesync.Folder.
+// recordToFolder maps an Apple Notes Folder record to a notesync.Folder. The
+// folder name is a server-decrypted, base64 ENCRYPTED_BYTES field.
 func recordToFolder(r ckRecord) notesync.Folder {
 	return notesync.Folder{
 		ID:       notesync.FolderID(r.RecordName),
-		ParentID: notesync.FolderID(r.referenceField("parent", "Folder", "parentFolder")),
-		Name:     r.stringField("title", "name", "TitleNote"),
+		ParentID: notesync.FolderID(r.referenceField("Folder", "parent", "parentFolder")),
+		Name:     r.decodedField("TitleEncrypted", "title", "name"),
 	}
 }
 
-// recordToNote maps a Note record to a notesync.Note. Body and checklist
-// extraction is best-effort: Apple stores the rich content in an encoded blob,
-// so we read the plain-text fields Notes exposes (title, snippet/preview) and
-// leave structured checklists to be refined against live data. The engine
-// re-sanitizes the body regardless, so a permissive extraction is safe.
+// recordToNote maps an Apple Notes Note record to a notesync.Note. Title and the
+// snippet are server-decrypted base64 plaintext. The full rich body lives in
+// TextDataEncrypted (gzip+protobuf, fetched via records/lookup) — handled
+// separately; here the snippet is used as the body. The folder is a reference.
 func recordToNote(r ckRecord) notesync.Note {
-	folder := r.referenceField("Folders", "folder", "parent")
+	folder := r.referenceField("Folders", "Folder", "parent")
 	return notesync.Note{
 		ID:       notesync.NoteID(r.RecordName),
 		FolderID: notesync.FolderID(folder),
 		Etag:     notesync.Etag(r.RecordChangeTag),
-		Title:    r.stringField("title", "TitleNote"),
-		BodyHTML: r.stringField("snippet", "textPreview", "textContent", "body"),
+		Title:    r.decodedField("TitleEncrypted", "title"),
+		BodyHTML: r.decodedField("SnippetEncrypted", "Snippet"),
 	}
 }
 

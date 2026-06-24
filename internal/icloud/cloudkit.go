@@ -1,6 +1,7 @@
 package icloud
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
@@ -11,6 +12,13 @@ const (
 	notesZone      = "Notes"
 	ckEnv          = "production"
 	ckScope        = "private"
+
+	// CloudKit-JS client identifiers the iCloud web app sends on every
+	// ckdatabasews request (observed values; they drift across Apple releases).
+	ckjsBuildVersion        = "2310ProjectDev27"
+	ckjsVersion             = "2.6.4"
+	ckClientBuildNumber     = "2622Build18"
+	ckClientMasteringNumber = "2622Build18"
 )
 
 // ckRecord is a generic CloudKit record.
@@ -45,6 +53,21 @@ func (r ckRecord) stringField(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// decodedField returns an ENCRYPTED_BYTES field decoded to its plaintext.
+// CloudKit Web Services decrypts these server-side (via the account's PCS
+// cookies) and returns base64 of the plaintext, so we just base64-decode. Falls
+// back to the raw string if it is not valid base64.
+func (r ckRecord) decodedField(names ...string) string {
+	s := r.stringField(names...)
+	if s == "" {
+		return ""
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return string(b)
+	}
+	return s
 }
 
 // queryBody builds a records/query request body for a record type (pure).

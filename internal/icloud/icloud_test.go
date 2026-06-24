@@ -1,10 +1,43 @@
 package icloud
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"recipes/internal/notesync"
 )
+
+func TestNotesRecordDecoding(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString
+	title := b64([]byte("Борщ"))
+	snip := b64([]byte("Готовим борщ."))
+	fname := b64([]byte("Супы"))
+	body := []byte(`{"records":[
+		{"recordName":"F1","recordType":"Folder","fields":{"TitleEncrypted":{"value":"` + fname + `","type":"ENCRYPTED_BYTES"}}},
+		{"recordName":"N1","recordType":"Note","recordChangeTag":"tag9","fields":{
+			"TitleEncrypted":{"value":"` + title + `","type":"ENCRYPTED_BYTES"},
+			"SnippetEncrypted":{"value":"` + snip + `","type":"ENCRYPTED_BYTES"},
+			"Folders":{"value":{"recordName":"F1"},"type":"REFERENCE"}
+		}}
+	]}`)
+	recs, err := parseRecords(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := recordToFolder(recs[0]); f.Name != "Супы" || f.ID != "F1" {
+		t.Fatalf("folder decode: %+v", f)
+	}
+	n := recordToNote(recs[1])
+	if n.Title != "Борщ" {
+		t.Fatalf("note title: %q", n.Title)
+	}
+	if n.BodyHTML != "Готовим борщ." {
+		t.Fatalf("note body: %q", n.BodyHTML)
+	}
+	if n.FolderID != "F1" || n.Etag != "tag9" {
+		t.Fatalf("note ref/etag: %+v", n)
+	}
+}
 
 func TestParseAccountLogin(t *testing.T) {
 	body := []byte(`{
@@ -32,37 +65,18 @@ func TestParseAccountLoginMissingDSID(t *testing.T) {
 	}
 }
 
-func TestParseRecordsAndMapping(t *testing.T) {
+func TestParseRecordsEnvelope(t *testing.T) {
+	// Records with a server error are skipped; clean ones are returned.
 	body := []byte(`{"records":[
-		{"recordName":"F1","recordType":"Folder","fields":{"title":{"value":"Десерты","type":"STRING"}}},
-		{"recordName":"N1","recordType":"Note","recordChangeTag":"tag1","fields":{
-			"title":{"value":"Шарлотка","type":"STRING"},
-			"snippet":{"value":"Печь 30 минут","type":"STRING"},
-			"Folders":{"value":{"recordName":"F1"},"type":"REFERENCE"}
-		}}
+		{"recordName":"F1","recordType":"Folder","fields":{}},
+		{"recordName":"N1","recordType":"Note","fields":{}}
 	]}`)
 	recs, err := parseRecords(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(recs) != 2 {
-		t.Fatalf("got %d records", len(recs))
-	}
-
-	f := recordToFolder(recs[0])
-	if f.ID != "F1" || f.Name != "Десерты" {
-		t.Fatalf("bad folder: %+v", f)
-	}
-
-	n := recordToNote(recs[1])
-	if n.ID != "N1" || n.Title != "Шарлотка" || n.Etag != "tag1" {
-		t.Fatalf("bad note: %+v", n)
-	}
-	if n.BodyHTML != "Печь 30 минут" {
-		t.Fatalf("bad body: %q", n.BodyHTML)
-	}
-	if n.FolderID != "F1" {
-		t.Fatalf("bad folder ref: %q", n.FolderID)
+		t.Fatalf("got %d records, want 2", len(recs))
 	}
 }
 

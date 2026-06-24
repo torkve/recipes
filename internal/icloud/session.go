@@ -34,7 +34,7 @@ type Session struct {
 
 	// CloudKit access.
 	WebServices map[string]string `json:"web_services"` // service name -> base URL
-	CKToken     string            `json:"ck_token"`
+	ClientID    string            `json:"client_id"`    // stable per-session UUID for CloudKit/setup calls
 
 	ExpiresAt time.Time `json:"expires_at"`
 }

@@ -13,6 +13,10 @@ const (
 	setupBase  = "https://setup.icloud.com/setup/ws/1"
 	widgetKey  = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d"
 	oauthRedir = "https://www.icloud.com"
+
+	// Client build identifiers the iCloud web app sends to setup.icloud.com.
+	setupClientBuildNumber     = "2622Build16"
+	setupClientMasteringNumber = "2622Build16"
 )
 
 // buildFederateBody is the JSON posted to .../federate (detects managed accounts).
@@ -111,9 +115,9 @@ type phoneNumber struct {
 // Trusted phone numbers appear nested under phoneNumberVerification (and, on some
 // responses, at the top level), so both are read.
 type authContext struct {
-	AuthType            string        `json:"authType"`
-	TrustedDeviceCount  int           `json:"trustedDeviceCount"`
-	TrustedPhoneNumbers []phoneNumber `json:"trustedPhoneNumbers"`
+	AuthType                string        `json:"authType"`
+	TrustedDeviceCount      int           `json:"trustedDeviceCount"`
+	TrustedPhoneNumbers     []phoneNumber `json:"trustedPhoneNumbers"`
 	PhoneNumberVerification struct {
 		TrustedPhoneNumbers []phoneNumber `json:"trustedPhoneNumbers"`
 	} `json:"phoneNumberVerification"`

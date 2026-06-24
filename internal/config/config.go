@@ -55,11 +55,11 @@ func (c *Config) KeysPath() string { return filepath.Join(c.DataDir, "keys.json"
 // Load reads configuration from the environment, applying defaults.
 func Load() (*Config, error) {
 	c := &Config{
-		Addr:          env("RECIPES_ADDR", ":8080"),
-		DataDir:       env("RECIPES_DATA_DIR", "./data"),
-		SiteName:      env("RECIPES_SITE_NAME", "Семейная кулинарная книга"),
-		AdminUsername: strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
-		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+		Addr:              env("RECIPES_ADDR", ":8080"),
+		DataDir:           env("RECIPES_DATA_DIR", "./data"),
+		SiteName:          env("RECIPES_SITE_NAME", "Семейная кулинарная книга"),
+		AdminUsername:     strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
+		AdminPassword:     os.Getenv("ADMIN_PASSWORD"),
 		SecureCookies:     envBool("RECIPES_SECURE_COOKIES", false),
 		ICloudEnabled:     envBool("RECIPES_ICLOUD_ENABLED", false),
 		ICloudPullMinutes: envInt("RECIPES_ICLOUD_PULL_MINUTES", 15),

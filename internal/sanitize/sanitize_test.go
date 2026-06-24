@@ -44,14 +44,14 @@ func TestImageFilenames(t *testing.T) {
 
 func TestIsValidUploadName(t *testing.T) {
 	cases := map[string]bool{
-		"abc.png":     true,
-		"a-b_c.webp":  true,
-		"":            false,
-		"a/b.png":     false,
-		`a\b.png`:     false,
-		"../x.png":    false,
-		"..":          false,
-		"a b.png":     false,
+		"abc.png":    true,
+		"a-b_c.webp": true,
+		"":           false,
+		"a/b.png":    false,
+		`a\b.png`:    false,
+		"../x.png":   false,
+		"..":         false,
+		"a b.png":    false,
 	}
 	for name, want := range cases {
 		if got := IsValidUploadName(name); got != want {

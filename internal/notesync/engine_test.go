@@ -21,7 +21,7 @@ type fakeProvider struct {
 type fakeSession struct{ data []byte }
 
 func (s fakeSession) Bytes() ([]byte, error) { return s.data, nil }
-func (s fakeSession) Expired() bool           { return false }
+func (s fakeSession) Expired() bool          { return false }
 
 func (p *fakeProvider) Begin(ctx context.Context, appleID, password string) (BindResult, error) {
 	return BindResult{Session: fakeSession{[]byte("sess")}, Pending: false}, nil

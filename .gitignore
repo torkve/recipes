@@ -1,0 +1,12 @@
+# Runtime data: sqlite db, uploaded images, sessions. Backed up by archiving data/.
+/data/
+
+# Build artifacts
+/recipes
+/bin/
+*.test
+*.out
+
+# Editor / OS
+.DS_Store
+*.swp

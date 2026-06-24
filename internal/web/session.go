@@ -43,6 +43,42 @@ func (s *Server) sessionUserID(r *http.Request) (int64, bool) {
 	return id, ok
 }
 
+const (
+	bindHandleKey  = "bind_handle"
+	bindAppleIDKey = "bind_appleid"
+)
+
+// setBindHandle stashes the pending 2FA continuation in the user's session.
+// The handle transitively carries auth material, so it must never go in a form.
+func (s *Server) setBindHandle(w http.ResponseWriter, r *http.Request, appleID, handle string) error {
+	sess, _ := s.sessions.Get(r, sessionName)
+	sess.Values[bindHandleKey] = handle
+	sess.Values[bindAppleIDKey] = appleID
+	return sess.Save(r, w)
+}
+
+// getBindHandle returns the pending bind handle and apple id, if present.
+func (s *Server) getBindHandle(r *http.Request) (appleID, handle string, ok bool) {
+	sess, err := s.sessions.Get(r, sessionName)
+	if err != nil {
+		return "", "", false
+	}
+	h, ok1 := sess.Values[bindHandleKey].(string)
+	a, _ := sess.Values[bindAppleIDKey].(string)
+	if !ok1 || h == "" {
+		return "", "", false
+	}
+	return a, h, true
+}
+
+// clearBindHandle removes any pending bind continuation.
+func (s *Server) clearBindHandle(w http.ResponseWriter, r *http.Request) {
+	sess, _ := s.sessions.Get(r, sessionName)
+	delete(sess.Values, bindHandleKey)
+	delete(sess.Values, bindAppleIDKey)
+	_ = sess.Save(r, w)
+}
+
 // newSessionStore builds a filesystem-backed cookie session store.
 func newSessionStore(dir string, authKey, encKey []byte, secure bool) *sessions.FilesystemStore {
 	st := sessions.NewFilesystemStore(dir, authKey, encKey)

@@ -31,6 +31,13 @@ type Config struct {
 	// SecureCookies marks session/CSRF cookies as Secure (HTTPS only).
 	// Disable for plain-HTTP local development.
 	SecureCookies bool
+
+	// ICloudEnabled turns on the iCloud Notes sync feature (admin UI, routes
+	// and the background pull worker). Default off: the reverse-engineered
+	// iCloud client is shipped dark until explicitly enabled with credentials.
+	ICloudEnabled bool
+	// ICloudPullMinutes is the background pull interval in minutes.
+	ICloudPullMinutes int
 }
 
 // DBPath returns the sqlite database file path.
@@ -53,7 +60,9 @@ func Load() (*Config, error) {
 		SiteName:      env("RECIPES_SITE_NAME", "Семейная кулинарная книга"),
 		AdminUsername: strings.TrimSpace(os.Getenv("ADMIN_USERNAME")),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
-		SecureCookies: envBool("RECIPES_SECURE_COOKIES", false),
+		SecureCookies:     envBool("RECIPES_SECURE_COOKIES", false),
+		ICloudEnabled:     envBool("RECIPES_ICLOUD_ENABLED", false),
+		ICloudPullMinutes: envInt("RECIPES_ICLOUD_PULL_MINUTES", 15),
 	}
 
 	if c.Addr == "" {
@@ -70,6 +79,18 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envInt(key string, def int) int {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func envBool(key string, def bool) bool {

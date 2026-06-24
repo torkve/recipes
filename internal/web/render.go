@@ -40,11 +40,12 @@ type pageData map[string]any
 // newPageData builds the base template payload shared by every page.
 func (s *Server) newPageData(r *http.Request) pageData {
 	return pageData{
-		"SiteName":  s.cfg.SiteName,
-		"User":      currentUser(r),
-		"CSRFField": csrf.TemplateField(r),
-		"CSRFToken": csrf.Token(r),
-		"Path":      r.URL.Path,
+		"SiteName":      s.cfg.SiteName,
+		"User":          currentUser(r),
+		"CSRFField":     csrf.TemplateField(r),
+		"CSRFToken":     csrf.Token(r),
+		"Path":          r.URL.Path,
+		"ICloudEnabled": s.engine != nil,
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
+	"recipes/internal/notesync"
 	"recipes/internal/store"
 )
 
@@ -26,11 +27,13 @@ type Server struct {
 	store     *store.Store
 	sessions  *sessions.FilesystemStore
 	templates map[string]*template.Template
+	engine    *notesync.Engine // nil when iCloud sync is disabled
 	handler   http.Handler
 }
 
-// NewServer wires templates, session store, CSRF protection and routes.
-func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys) (*Server, error) {
+// NewServer wires templates, session store, CSRF protection and routes. engine
+// may be nil, in which case the iCloud sync routes report the feature is off.
+func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *notesync.Engine) (*Server, error) {
 	tmpls, err := loadTemplates(templateFuncs())
 	if err != nil {
 		return nil, err
@@ -41,6 +44,7 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys) (*Server, e
 		store:     st,
 		sessions:  newSessionStore(cfg.SessionsDir(), keys.SessionAuth, keys.SessionEnc, cfg.SecureCookies),
 		templates: tmpls,
+		engine:    engine,
 	}
 
 	csrfMW := csrf.Protect(
@@ -106,6 +110,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /admin/categories", s.requireAuth(s.handleAdminCategories))
 	mux.HandleFunc("POST /admin/categories/{id}/rename", s.requireAuth(s.handleCategoryRename))
 	mux.HandleFunc("POST /admin/categories/{id}/delete", s.requireAuth(s.handleCategoryDelete))
+
+	// Admin: iCloud sync (handlers report 404 when the feature is disabled).
+	mux.HandleFunc("GET /admin/sync", s.requireAuth(s.handleSyncStatus))
+	mux.HandleFunc("POST /admin/sync/bind", s.requireAuth(s.handleSyncBind))
+	mux.HandleFunc("POST /admin/sync/bind/2fa", s.requireAuth(s.handleSyncBind2FA))
+	mux.HandleFunc("POST /admin/sync/folder", s.requireAuth(s.handleSyncSetFolder))
+	mux.HandleFunc("POST /admin/sync/pull", s.requireAuth(s.handleSyncPull))
+	mux.HandleFunc("POST /admin/sync/push", s.requireAuth(s.handleSyncPush))
+	mux.HandleFunc("POST /admin/sync/conflicts/{id}/resolve", s.requireAuth(s.handleSyncResolve))
+	mux.HandleFunc("POST /admin/sync/unbind", s.requireAuth(s.handleSyncUnbind))
 
 	// Embedded static assets.
 	sub, _ := fs.Sub(staticFS, "static")

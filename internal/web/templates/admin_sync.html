@@ -1,0 +1,81 @@
+{{define "content"}}
+<section class="sync">
+  <div class="list-head">
+    <h1>Синхронизация с iCloud</h1>
+    <a href="/admin/recipes">← Рецепты</a>
+  </div>
+
+  {{if .Message}}<p class="notice">{{.Message}}</p>{{end}}
+
+  {{if .Pending2FA}}
+  <form class="form" method="post" action="/admin/sync/bind/2fa">
+    {{.CSRFField}}
+    <p>Введите код двухфакторной аутентификации, отправленный на ваше устройство Apple.</p>
+    <label>Код
+      <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+    </label>
+    <button class="btn" type="submit">Подтвердить</button>
+  </form>
+
+  {{else if not .Bound}}
+  <form class="form" method="post" action="/admin/sync/bind">
+    {{.CSRFField}}
+    <p>Привяжите ваш Apple ID, чтобы синхронизировать рецепты с заметками iCloud.</p>
+    <label>Apple ID
+      <input type="email" name="apple_id" autocomplete="username" autofocus required>
+    </label>
+    <label>Пароль
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button class="btn" type="submit">Привязать</button>
+  </form>
+
+  {{else}}
+  <p>
+    Привязан Apple ID: <strong>{{.AppleID}}</strong>
+    <form class="inline" method="post" action="/admin/sync/unbind" onsubmit="return confirm('Отвязать аккаунт iCloud?');">
+      {{.CSRFField}}<button class="btn-link btn-danger-link" type="submit">Отвязать</button>
+    </form>
+  </p>
+
+  {{if .FolderError}}<p class="error">Не удалось получить список папок: {{.FolderError}}</p>{{end}}
+
+  <form class="form" method="post" action="/admin/sync/folder">
+    {{.CSRFField}}
+    <label>Папка заметок для синхронизации
+      {{if .Folders}}
+      <select name="folder">
+        {{range .Folders}}<option value="{{.ID}}"{{if eq (printf "%s" .ID) $.Folder}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      {{else}}
+      <input type="text" name="folder" value="{{.Folder}}" placeholder="Идентификатор папки">
+      {{end}}
+    </label>
+    <button class="btn" type="submit">Сохранить папку</button>
+  </form>
+
+  {{if .Folder}}
+  <div class="sync-actions">
+    <form class="inline" method="post" action="/admin/sync/pull">{{.CSRFField}}<button class="btn" type="submit">Синхронизировать из iCloud</button></form>
+    <form class="inline" method="post" action="/admin/sync/push">{{.CSRFField}}<button class="btn btn-secondary" type="submit">Отправить в iCloud</button></form>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{if .Conflicts}}
+  <h2>Конфликты</h2>
+  <ul class="conflicts">
+    {{range .Conflicts}}
+    <li>
+      <span>{{.Detail}}</span>
+      <form class="inline" method="post" action="/admin/sync/conflicts/{{.ID}}/resolve">
+        {{$.CSRFField}}
+        <button class="btn-link" type="submit" name="choice" value="local">Оставить из приложения</button>
+        <button class="btn-link" type="submit" name="choice" value="remote">Взять из iCloud</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+</section>
+{{end}}

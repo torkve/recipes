@@ -4,6 +4,7 @@
     <h1>Управление рецептами</h1>
     <div class="head-actions">
       <a href="/admin/categories">Категории</a>
+      {{if .ICloudEnabled}}<a href="/admin/sync">iCloud</a>{{end}}
       <a class="btn" href="/admin/recipes/new">+ Новый рецепт</a>
     </div>
   </div>

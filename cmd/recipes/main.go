@@ -13,6 +13,8 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
+	"recipes/internal/icloud"
+	"recipes/internal/notesync"
 	"recipes/internal/store"
 	"recipes/internal/web"
 )
@@ -61,7 +63,19 @@ func run() error {
 		return err
 	}
 
-	srvHandler, err := web.NewServer(cfg, st, keys)
+	// Build the iCloud sync engine when enabled (default off): the
+	// reverse-engineered iCloud client ships dark until configured.
+	var engine *notesync.Engine
+	if cfg.ICloudEnabled {
+		provider := icloud.New(nil)
+		engine, err = notesync.NewEngine(st, provider, provider, keys.SyncEnc, cfg.UploadsDir())
+		if err != nil {
+			return err
+		}
+		log.Printf("recipes: iCloud sync enabled")
+	}
+
+	srvHandler, err := web.NewServer(cfg, st, keys, engine)
 	if err != nil {
 		return err
 	}
@@ -77,6 +91,12 @@ func run() error {
 	// server fails to start.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Start the background pull worker (stops on ctx cancellation).
+	if engine != nil {
+		worker := notesync.NewWorker(engine, st, time.Duration(cfg.ICloudPullMinutes)*time.Minute)
+		go worker.Run(ctx)
+	}
 
 	idleClosed := make(chan struct{})
 	go func() {

@@ -141,6 +141,15 @@ body {
 .muted-note { color: var(--muted); font-size: 0.9rem; }
 .rename-form { display: flex; gap: 0.4rem; align-items: center; }
 .rename-form input { padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; }
+
+/* iCloud sync */
+.sync .form { margin: 1rem 0; }
+.sync-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 1.5rem 0; }
+.conflicts { list-style: none; padding: 0; }
+.conflicts li {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  flex-wrap: wrap; padding: 0.6rem 0; border-bottom: 1px solid var(--border);
+}
 .admin-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 .admin-table th, .admin-table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 .row-actions { display: flex; gap: 0.75rem; align-items: center; white-space: nowrap; }

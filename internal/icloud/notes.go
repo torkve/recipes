@@ -38,7 +38,7 @@ func (r ckRecord) referenceField(names ...string) string {
 func recordToFolder(r ckRecord) notesync.Folder {
 	return notesync.Folder{
 		ID:       notesync.FolderID(r.RecordName),
-		ParentID: notesync.FolderID(r.referenceField("Folder", "parent", "parentFolder")),
+		ParentID: notesync.FolderID(r.referenceField("ParentFolder", "Folder", "parent")),
 		Name:     r.decodedField("TitleEncrypted", "title", "name"),
 	}
 }

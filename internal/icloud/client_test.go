@@ -2,6 +2,8 @@ package icloud
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,23 +31,35 @@ func TestRequestsIdentifyAsBrowser(t *testing.T) {
 	}
 }
 
-// stubTransport returns canned CloudKit responses and records whether a
-// records/modify (create) request was made.
+// stubTransport serves canned CloudKit responses: successive changes/zone pages,
+// and records whether a records/modify (create) request was made.
 type stubTransport struct {
-	folderQueryJSON string
-	modifyCalled    bool
-	lastURL         string
+	zonePages    []string
+	zoneIdx      int
+	zoneCalls    int
+	modifyCalled bool
+	lastURL      string
 }
 
 func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.lastURL = req.URL.String()
 	body := "{}"
 	switch {
-	case strings.Contains(req.URL.Path, "records/query"):
-		body = t.folderQueryJSON
+	case strings.Contains(req.URL.Path, "changes/zone"):
+		t.zoneCalls++
+		if len(t.zonePages) == 0 {
+			body = emptyZonePage(false)
+		} else {
+			i := t.zoneIdx
+			if i >= len(t.zonePages) {
+				i = len(t.zonePages) - 1
+			}
+			body = t.zonePages[i]
+			t.zoneIdx++
+		}
 	case strings.Contains(req.URL.Path, "records/modify"):
 		t.modifyCalled = true
-		body = `{"records":[{"recordName":"NEW","recordType":"Folder","fields":{"title":{"value":"Десерты","type":"STRING"}}}]}`
+		body = `{"records":[{"recordName":"NEW","recordType":"Folder","fields":{}}]}`
 	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -54,23 +68,26 @@ func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+func emptyZonePage(more bool) string {
+	return fmt.Sprintf(`{"zones":[{"records":[],"syncToken":"t","moreComing":%v}]}`, more)
+}
+
+// folderPage is a single changes/zone page with one Folder record.
+func folderPage(recordName, name, parent string, more bool) string {
+	enc := base64.StdEncoding.EncodeToString([]byte(name))
+	return fmt.Sprintf(`{"zones":[{"records":[{"recordName":"%s","recordType":"Folder","fields":{`+
+		`"TitleEncrypted":{"value":"%s","type":"ENCRYPTED_BYTES"},`+
+		`"ParentFolder":{"value":{"recordName":"%s"},"type":"REFERENCE"}}}],"syncToken":"t","moreComing":%v}]}`,
+		recordName, enc, parent, more)
+}
+
 func testSession() *Session {
-	return &Session{
-		DSID:        "1",
-		WebServices: map[string]string{"ckdatabasews": "https://ck.example"},
-	}
+	return &Session{DSID: "1", ClientID: "CID", WebServices: map[string]string{"ckdatabasews": "https://ck.example"}}
 }
 
 func TestEnsureFolderReusesExisting(t *testing.T) {
 	// A folder "Десерты" already exists as a direct child of ROOT.
-	st := &stubTransport{
-		folderQueryJSON: `{"records":[
-			{"recordName":"F1","recordType":"Folder","fields":{
-				"title":{"value":"Десерты","type":"STRING"},
-				"parent":{"value":{"recordName":"ROOT"},"type":"REFERENCE"}
-			}}
-		]}`,
-	}
+	st := &stubTransport{zonePages: []string{folderPage("F1", "Десерты", "ROOT", false)}}
 	p := New(&http.Client{Transport: st}, 1)
 
 	f, err := p.EnsureFolder(context.Background(), testSession(), "ROOT", "Десерты")
@@ -85,23 +102,8 @@ func TestEnsureFolderReusesExisting(t *testing.T) {
 	}
 }
 
-func TestCloudKitQueryParams(t *testing.T) {
-	st := &stubTransport{folderQueryJSON: `{"records":[]}`}
-	p := New(&http.Client{Transport: st}, 1)
-	sess := &Session{DSID: "DS", ClientID: "CID", WebServices: map[string]string{"ckdatabasews": "https://ck.example"}}
-
-	if _, err := p.ListFolders(context.Background(), sess, "ROOT"); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"ckjsVersion=2.6.4", "clientId=CID", "dsid=DS", "ckjsBuildVersion=", "clientBuildNumber="} {
-		if !strings.Contains(st.lastURL, want) {
-			t.Fatalf("CloudKit query missing %q: %s", want, st.lastURL)
-		}
-	}
-}
-
 func TestEnsureFolderCreatesWhenAbsent(t *testing.T) {
-	st := &stubTransport{folderQueryJSON: `{"records":[]}`}
+	st := &stubTransport{zonePages: []string{emptyZonePage(false)}}
 	p := New(&http.Client{Transport: st}, 1)
 
 	if _, err := p.EnsureFolder(context.Background(), testSession(), "ROOT", "Десерты"); err != nil {
@@ -109,5 +111,41 @@ func TestEnsureFolderCreatesWhenAbsent(t *testing.T) {
 	}
 	if !st.modifyCalled {
 		t.Fatal("EnsureFolder should have created the folder when absent")
+	}
+}
+
+func TestListFoldersUsesChangesZoneWithParams(t *testing.T) {
+	st := &stubTransport{zonePages: []string{emptyZonePage(false)}}
+	p := New(&http.Client{Transport: st}, 1)
+
+	if _, err := p.ListFolders(context.Background(), testSession(), "ROOT"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.lastURL, "changes/zone") {
+		t.Fatalf("expected changes/zone, got %s", st.lastURL)
+	}
+	for _, want := range []string{"ckjsVersion=2.6.4", "clientId=CID", "dsid=1", "ckjsBuildVersion=", "clientBuildNumber="} {
+		if !strings.Contains(st.lastURL, want) {
+			t.Fatalf("CloudKit query missing %q: %s", want, st.lastURL)
+		}
+	}
+}
+
+func TestZoneChangesPaginates(t *testing.T) {
+	st := &stubTransport{zonePages: []string{
+		folderPage("F1", "A", "ROOT", true),  // moreComing -> fetch next page
+		folderPage("F2", "B", "ROOT", false), // last page
+	}}
+	p := New(&http.Client{Transport: st}, 1)
+
+	folders, err := p.ListFolders(context.Background(), testSession(), "ROOT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.zoneCalls != 2 {
+		t.Fatalf("expected 2 changes/zone calls, got %d", st.zoneCalls)
+	}
+	if len(folders) != 2 {
+		t.Fatalf("expected 2 folders across pages, got %d", len(folders))
 	}
 }

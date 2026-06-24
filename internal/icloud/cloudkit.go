@@ -55,6 +55,22 @@ func (r ckRecord) stringField(names ...string) string {
 	return ""
 }
 
+// intField returns the first present field decoded as an int64 (CloudKit INT64),
+// or 0.
+func (r ckRecord) intField(names ...string) int64 {
+	for _, n := range names {
+		f, ok := r.Fields[n]
+		if !ok {
+			continue
+		}
+		var i int64
+		if err := json.Unmarshal(f.Value, &i); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
 // decodedField returns an ENCRYPTED_BYTES field decoded to its plaintext.
 // CloudKit Web Services decrypts these server-side (via the account's PCS
 // cookies) and returns base64 of the plaintext, so we just base64-decode. Falls
@@ -70,13 +86,50 @@ func (r ckRecord) decodedField(names ...string) string {
 	return s
 }
 
-// queryBody builds a records/query request body for a record type (pure).
-func queryBody(recordType string) ([]byte, error) {
-	body := map[string]any{
-		"zoneID": map[string]string{"zoneName": notesZone},
-		"query":  map[string]any{"recordType": recordType},
+// notesDesiredKeys / notesDesiredRecordTypes scope the zone-changes scan to the
+// records and fields we map. Folder is not indexable for records/query, so the
+// whole Notes zone is enumerated via changes/zone instead.
+var (
+	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate"}
+	notesDesiredRecordTypes = []string{"Note", "Folder"}
+)
+
+// zoneChangesBody builds a changes/zone request for the Notes zone. syncToken is
+// included only when resuming a previous scan (pure).
+func zoneChangesBody(syncToken string) ([]byte, error) {
+	zone := map[string]any{
+		"zoneID":             map[string]string{"zoneName": notesZone},
+		"desiredKeys":        notesDesiredKeys,
+		"desiredRecordTypes": notesDesiredRecordTypes,
+		"reverse":            true,
 	}
-	return json.Marshal(body)
+	if syncToken != "" {
+		zone["syncToken"] = syncToken
+	}
+	return json.Marshal(map[string]any{"zones": []any{zone}})
+}
+
+// zoneChangesResponse is the changes/zone envelope.
+type zoneChangesResponse struct {
+	Zones []struct {
+		Records    []ckRecord `json:"records"`
+		SyncToken  string     `json:"syncToken"`
+		MoreComing bool       `json:"moreComing"`
+	} `json:"zones"`
+}
+
+// parseZoneChanges extracts one page of records plus the next sync token and the
+// moreComing flag (pure).
+func parseZoneChanges(body []byte) (records []ckRecord, syncToken string, moreComing bool, err error) {
+	var r zoneChangesResponse
+	if err = json.Unmarshal(body, &r); err != nil {
+		return nil, "", false, fmt.Errorf("icloud: parse changes/zone: %w", err)
+	}
+	if len(r.Zones) == 0 {
+		return nil, "", false, nil
+	}
+	z := r.Zones[0]
+	return z.Records, z.SyncToken, z.MoreComing, nil
 }
 
 // queryResponse is the records/query / records/modify response envelope.

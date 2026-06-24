@@ -2,6 +2,7 @@ package icloud
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"recipes/internal/notesync"
@@ -62,6 +63,51 @@ func TestParseAccountLogin(t *testing.T) {
 func TestParseAccountLoginMissingDSID(t *testing.T) {
 	if _, _, err := parseAccountLogin([]byte(`{"webservices":{}}`)); err == nil {
 		t.Fatal("expected error for missing dsid")
+	}
+}
+
+func TestParseZoneChanges(t *testing.T) {
+	body := []byte(`{"zones":[{"zoneID":{"zoneName":"Notes"},"syncToken":"TOK","moreComing":true,"records":[
+		{"recordName":"F1","recordType":"Folder"},
+		{"recordName":"N1","recordType":"Note"}
+	]}]}`)
+	recs, tok, more, err := parseZoneChanges(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 || tok != "TOK" || !more {
+		t.Fatalf("got recs=%d tok=%q more=%v", len(recs), tok, more)
+	}
+}
+
+func TestZoneChangesBody(t *testing.T) {
+	b, _ := zoneChangesBody("")
+	s := string(b)
+	if !strings.Contains(s, `"zoneName":"Notes"`) || !strings.Contains(s, `"reverse":true`) {
+		t.Fatalf("missing zone/reverse: %s", s)
+	}
+	if strings.Contains(s, "syncToken") {
+		t.Fatalf("empty token should be omitted: %s", s)
+	}
+	b2, _ := zoneChangesBody("TOK")
+	if !strings.Contains(string(b2), `"syncToken":"TOK"`) {
+		t.Fatalf("sync token not included: %s", b2)
+	}
+}
+
+func TestRecordToFolderParent(t *testing.T) {
+	enc := base64.StdEncoding.EncodeToString([]byte("Супы"))
+	body := []byte(`{"records":[{"recordName":"C","recordType":"Folder","fields":{
+		"TitleEncrypted":{"value":"` + enc + `","type":"ENCRYPTED_BYTES"},
+		"ParentFolder":{"value":{"recordName":"P"},"type":"REFERENCE"}
+	}}]}`)
+	recs, err := parseRecords(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := recordToFolder(recs[0])
+	if f.Name != "Супы" || f.ParentID != "P" {
+		t.Fatalf("bad folder parent: %+v", f)
 	}
 }
 

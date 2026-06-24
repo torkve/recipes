@@ -74,6 +74,36 @@ func (p *Provider) refresh(ctx context.Context, s *Session) error {
 	return nil
 }
 
+// zoneChanges enumerates the Notes zone via changes/zone, paginating on
+// moreComing, and returns all records plus the final sync token.
+func (p *Provider) zoneChanges(ctx context.Context, s *Session, since string) ([]ckRecord, string, error) {
+	const maxPages = 200
+	var all []ckRecord
+	token := since
+	for page := 0; page < maxPages; page++ {
+		body, err := zoneChangesBody(token)
+		if err != nil {
+			return nil, "", err
+		}
+		respBody, err := p.ckPost(ctx, s, "changes/zone", body)
+		if err != nil {
+			return nil, "", err
+		}
+		recs, next, more, err := parseZoneChanges(respBody)
+		if err != nil {
+			return nil, "", err
+		}
+		all = append(all, recs...)
+		token = next
+		if !more {
+			return all, token, nil
+		}
+	}
+	// Hitting the cap while more pages remain would silently drop records; fail
+	// loudly rather than return a partial result with a non-final token.
+	return nil, "", fmt.Errorf("icloud: changes/zone exceeded %d pages", maxPages)
+}
+
 // ListFolders returns folders under root (descendants only), with parents
 // relative to root.
 func (p *Provider) ListFolders(ctx context.Context, sess notesync.Session, root notesync.FolderID) ([]notesync.Folder, error) {
@@ -81,25 +111,27 @@ func (p *Provider) ListFolders(ctx context.Context, sess notesync.Session, root 
 	if !ok {
 		return nil, errBadSession
 	}
-	recs, err := p.ckQuery(ctx, s, recordTypeFolder)
+	recs, _, err := p.zoneChanges(ctx, s, "")
 	if err != nil {
 		return nil, err
 	}
-	all := make([]notesync.Folder, 0, len(recs))
+	var all []notesync.Folder
 	for _, r := range recs {
-		all = append(all, recordToFolder(r))
+		if r.RecordType == recordTypeFolder {
+			all = append(all, recordToFolder(r))
+		}
 	}
 	return descendantsOf(all, root), nil
 }
 
-// ChangedNotes returns notes under root. The `since` token is currently unused
-// (full enumeration); `next` is returned empty.
+// ChangedNotes returns notes under root that changed since the given token,
+// along with the next token. since == "" performs a full enumeration.
 func (p *Provider) ChangedNotes(ctx context.Context, sess notesync.Session, root notesync.FolderID, since string) ([]notesync.Note, string, error) {
 	s, ok := sess.(*Session)
 	if !ok {
 		return nil, "", errBadSession
 	}
-	recs, err := p.ckQuery(ctx, s, recordTypeNote)
+	recs, next, err := p.zoneChanges(ctx, s, since)
 	if err != nil {
 		return nil, "", err
 	}
@@ -113,12 +145,15 @@ func (p *Provider) ChangedNotes(ctx context.Context, sess notesync.Session, root
 	}
 	var notes []notesync.Note
 	for _, r := range recs {
+		if r.RecordType != recordTypeNote || r.intField("Deleted") == 1 {
+			continue
+		}
 		n := recordToNote(r)
 		if inScope[n.FolderID] || n.FolderID == "" {
 			notes = append(notes, n)
 		}
 	}
-	return notes, "", nil
+	return notes, next, nil
 }
 
 // PushNote creates or updates a note, translating CloudKit conflicts.
@@ -197,18 +232,6 @@ func (p *Provider) EnsureFolder(ctx context.Context, sess notesync.Session, pare
 }
 
 // --- CloudKit HTTP helpers --------------------------------------------------
-
-func (p *Provider) ckQuery(ctx context.Context, s *Session, recordType string) ([]ckRecord, error) {
-	body, err := queryBody(recordType)
-	if err != nil {
-		return nil, err
-	}
-	respBody, err := p.ckPost(ctx, s, "records/query", body)
-	if err != nil {
-		return nil, err
-	}
-	return parseRecords(respBody)
-}
 
 func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byte) ([]byte, error) {
 	base := s.ckDatabaseURL()

@@ -38,6 +38,10 @@ type Config struct {
 	ICloudEnabled bool
 	// ICloudPullMinutes is the background pull interval in minutes.
 	ICloudPullMinutes int
+	// ICloudSRPVariant selects the SRP byte convention for Apple sign-in. Apple
+	// throttles repeated attempts, so we try one per bind; if sign-in fails with
+	// 401, set the next index and restart. Default 1 (pyicloud-style).
+	ICloudSRPVariant int
 }
 
 // DBPath returns the sqlite database file path.
@@ -63,6 +67,7 @@ func Load() (*Config, error) {
 		SecureCookies:     envBool("RECIPES_SECURE_COOKIES", false),
 		ICloudEnabled:     envBool("RECIPES_ICLOUD_ENABLED", false),
 		ICloudPullMinutes: envInt("RECIPES_ICLOUD_PULL_MINUTES", 15),
+		ICloudSRPVariant:  envInt("RECIPES_ICLOUD_SRP_VARIANT", 1),
 	}
 
 	if c.Addr == "" {

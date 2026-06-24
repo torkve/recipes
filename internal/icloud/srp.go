@@ -87,20 +87,25 @@ const (
 )
 
 // srpOptions selects an SRP byte convention. Apple's server accepts exactly one;
-// since it can't be confirmed offline, Begin tries srpVariants in order.
+// since it can't be confirmed offline, Begin uses the config-selected variant
+// (one attempt per bind, because Apple throttles repeated sign-in attempts).
 type srpOptions struct {
 	xMode xMode
 	padM1 bool // rfc5054: pad A/B/g to len(N) inside the M1/M2 hashes
 }
 
-// srpVariants are the candidate conventions, most-likely first. pyicloud uses
-// rfc5054_enable (padded) + no_username_in_x (x = H(salt|H(dk))).
+// srpVariants are the candidate conventions, selected by index via config
+// (RECIPES_ICLOUD_SRP_VARIANT). Apple throttles repeated sign-in attempts, so we
+// try only one per bind; index 1 is the default (pyicloud-style: rfc5054 padding
+// + no_username_in_x, which makes x = H(salt | H(":" | dk))). Index 0 has been
+// observed to return 401 against at least one account.
 var srpVariants = []srpOptions{
-	{xHashSalt, true},
-	{xHashSaltColon, true},
-	{xDirect, true},
-	{xHashSalt, false},
-	{xDirect, false},
+	{xHashSalt, true},       // 0
+	{xHashSaltColon, true},  // 1 (default)
+	{xDirect, true},         // 2
+	{xHashSaltColon, false}, // 3
+	{xHashSalt, false},      // 4
+	{xDirect, false},        // 5
 }
 
 // deriveX wraps the PBKDF2 output dk into the SRP x value per opts.

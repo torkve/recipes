@@ -16,6 +16,7 @@ services:
       # iCloud Notes sync (off by default; requires Apple ID + 2FA at runtime).
       RECIPES_ICLOUD_ENABLED: ${RECIPES_ICLOUD_ENABLED:-false}
       RECIPES_ICLOUD_PULL_MINUTES: ${RECIPES_ICLOUD_PULL_MINUTES:-15}
+      RECIPES_ICLOUD_SRP_VARIANT: ${RECIPES_ICLOUD_SRP_VARIANT:-1}
     volumes:
       - recipes-data:/data
 

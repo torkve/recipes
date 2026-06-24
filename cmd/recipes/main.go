@@ -67,7 +67,7 @@ func run() error {
 	// reverse-engineered iCloud client ships dark until configured.
 	var engine *notesync.Engine
 	if cfg.ICloudEnabled {
-		provider := icloud.New(nil)
+		provider := icloud.New(nil, cfg.ICloudSRPVariant)
 		engine, err = notesync.NewEngine(st, provider, provider, keys.SyncEnc, cfg.UploadsDir())
 		if err != nil {
 			return err

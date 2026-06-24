@@ -16,16 +16,21 @@ import (
 // Provider implements notesync.SyncProvider and notesync.Binder against the
 // private iCloud web services.
 type Provider struct {
-	http *http.Client
+	http       *http.Client
+	srpVariant int // index into srpVariants for the SRP byte convention
 }
 
 // New returns a Provider using the given HTTP client (which must have a cookie
-// jar). Pass nil for a default client with a jar.
-func New(client *http.Client) *Provider {
+// jar). Pass nil for a default client with a jar. srpVariant selects the SRP
+// convention (see srpVariants); out-of-range values fall back to 0.
+func New(client *http.Client, srpVariant int) *Provider {
 	if client == nil {
 		client = newJarClient()
 	}
-	return &Provider{http: client}
+	if srpVariant < 0 || srpVariant >= len(srpVariants) {
+		srpVariant = 0
+	}
+	return &Provider{http: client, srpVariant: srpVariant}
 }
 
 var _ notesync.SyncProvider = (*Provider)(nil)

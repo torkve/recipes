@@ -17,7 +17,7 @@ func TestRequestsIdentifyAsBrowser(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	p := New(ts.Client())
+	p := New(ts.Client(), 1)
 	if _, _, err := p.do(context.Background(), http.MethodGet, ts.URL, nil, nil, &Session{}); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestEnsureFolderReusesExisting(t *testing.T) {
 			}}
 		]}`,
 	}
-	p := New(&http.Client{Transport: st})
+	p := New(&http.Client{Transport: st}, 1)
 
 	f, err := p.EnsureFolder(context.Background(), testSession(), "ROOT", "Десерты")
 	if err != nil {
@@ -85,7 +85,7 @@ func TestEnsureFolderReusesExisting(t *testing.T) {
 
 func TestEnsureFolderCreatesWhenAbsent(t *testing.T) {
 	st := &stubTransport{folderQueryJSON: `{"records":[]}`}
-	p := New(&http.Client{Transport: st})
+	p := New(&http.Client{Transport: st}, 1)
 
 	if _, err := p.EnsureFolder(context.Background(), testSession(), "ROOT", "Десерты"); err != nil {
 		t.Fatal(err)

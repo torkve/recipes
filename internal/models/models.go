@@ -68,3 +68,43 @@ type RecipeImage struct {
 	ContentType string
 	CreatedAt   time.Time
 }
+
+// ICloudAccount is a user's binding to their Apple iCloud Notes for sync.
+// SessionBlob holds the encrypted auth session (never plaintext).
+type ICloudAccount struct {
+	ID          int64
+	UserID      int64
+	AppleID     string
+	SessionBlob []byte
+	NotesFolder string // chosen root folder id/name to sync
+	CreatedAt   time.Time
+}
+
+// SyncState records the last-synced fingerprints linking a recipe to a note,
+// forming the common ancestor for three-way conflict detection.
+type SyncState struct {
+	RecipeID     int64
+	NoteID       string
+	LastSyncedAt time.Time
+	LocalHash    string // recipe hash at last sync
+	RemoteHash   string // note hash at last sync (base)
+}
+
+// Sync conflict kinds.
+const (
+	ConflictBothChanged    = "both_changed"
+	ConflictNoteUnparsable = "note_unparseable"
+	ConflictDupTitle       = "dup_title"
+	ConflictFolderAmbig    = "folder_ambiguous"
+)
+
+// SyncConflict is an ambiguity that requires manual resolution.
+type SyncConflict struct {
+	ID        int64
+	RecipeID  *int64
+	NoteID    *string
+	Kind      string
+	Detail    string
+	CreatedAt time.Time
+	Resolved  bool
+}

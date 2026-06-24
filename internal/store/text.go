@@ -8,6 +8,10 @@ import (
 	"recipes/internal/models"
 )
 
+// PlainTextHTML strips tags/entities from HTML, yielding text for hashing and
+// indexing. Exported for the sync layer's conflict fingerprinting.
+func PlainTextHTML(s string) string { return htmlToText(s) }
+
 // NormalizeName produces the uniqueness key for a category name: trimmed,
 // internal whitespace collapsed to single spaces, and lowercased. This makes
 // "Супы", " супы " and "СУПЫ" collide so duplicates are rejected.

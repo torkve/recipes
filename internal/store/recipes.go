@@ -189,6 +189,25 @@ func (s *Store) GetRecipe(ctx context.Context, id int64) (*models.Recipe, error)
 	return r, nil
 }
 
+// ListRecipeIDsByOwner returns the ids of recipes owned by a user (used by the
+// sync push to find that user's recipes to send back to iCloud).
+func (s *Store) ListRecipeIDsByOwner(ctx context.Context, ownerID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM recipes WHERE owner_id = ? ORDER BY id`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetRecipeByNoteID loads the recipe linked to an iCloud note, or ErrNotFound.
 func (s *Store) GetRecipeByNoteID(ctx context.Context, noteID string) (*models.Recipe, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+recipeCols+` FROM recipes WHERE icloud_note_id = ?`, noteID)

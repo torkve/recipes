@@ -274,6 +274,10 @@ func (s *Server) handleRecipeCreate(w http.ResponseWriter, r *http.Request) {
 		}, http.StatusBadRequest)
 		return
 	}
+	// Attribute the recipe to its creator so it can be pushed to their iCloud.
+	if u := currentUser(r); u != nil {
+		in.OwnerID = &u.ID
+	}
 	rec, err := s.store.CreateRecipe(r.Context(), in)
 	if err != nil {
 		s.serverError(w, err)

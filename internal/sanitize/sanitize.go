@@ -54,5 +54,8 @@ func ImageFilenames(html string) []string {
 // IsValidUploadName reports whether name is a safe upload basename (no path
 // traversal, matches our generated pattern).
 func IsValidUploadName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, "/\\") && uploadSrc.MatchString("/uploads/"+name)
+	return name != "" &&
+		!strings.ContainsAny(name, "/\\") &&
+		!strings.Contains(name, "..") &&
+		uploadSrc.MatchString("/uploads/"+name)
 }

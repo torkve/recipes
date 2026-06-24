@@ -144,6 +144,8 @@ func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root no
 	}
 	folders := descendantsOf(rawFolders, root)
 
+	attURL := imageURLsByAttachment(recs)
+
 	inScope := map[notesync.FolderID]bool{root: true}
 	for _, f := range folders {
 		inScope[f.ID] = true
@@ -155,10 +157,72 @@ func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root no
 		}
 		n := recordToNote(r)
 		if inScope[n.FolderID] || n.FolderID == "" {
+			n.Images = resolveImageRefs(n.Images, attURL)
 			notes = append(notes, n)
 		}
 	}
 	return folders, notes, next, nil
+}
+
+// imageURLsByAttachment maps each image Attachment record name to its download
+// URL by following Attachment.Media -> Media.Asset.downloadURL.
+func imageURLsByAttachment(recs []ckRecord) map[string]string {
+	mediaURL := map[string]string{}
+	for _, r := range recs {
+		if r.RecordType == recordTypeMedia {
+			if url, _ := r.assetField("Asset"); url != "" {
+				mediaURL[r.RecordName] = url
+			}
+		}
+	}
+	attURL := map[string]string{}
+	for _, r := range recs {
+		if r.RecordType != recordTypeAttachment {
+			continue
+		}
+		if url, ok := mediaURL[r.referenceField("Media")]; ok {
+			attURL[r.RecordName] = url
+		}
+	}
+	return attURL
+}
+
+// resolveImageRefs stamps each image's download URL from the attachment map,
+// dropping images whose asset could not be resolved (their @@IMG marker is then
+// stripped from the body on import).
+func resolveImageRefs(imgs []notesync.NoteImage, attURL map[string]string) []notesync.NoteImage {
+	var out []notesync.NoteImage
+	for _, img := range imgs {
+		if url, ok := attURL[img.ID]; ok {
+			img.Ref = url
+			out = append(out, img)
+		}
+	}
+	return out
+}
+
+// FetchImage downloads one image's bytes from its resolved Ref (a CloudKit asset
+// download URL), sniffing the content type from the payload.
+func (p *Provider) FetchImage(ctx context.Context, sess notesync.Session, img notesync.NoteImage) (notesync.NoteImage, error) {
+	s, ok := sess.(*Session)
+	if !ok {
+		return notesync.NoteImage{}, errBadSession
+	}
+	if img.Ref == "" {
+		return notesync.NoteImage{}, fmt.Errorf("icloud: image %s has no download ref", img.ID)
+	}
+	data, resp, err := p.do(ctx, http.MethodGet, img.Ref, nil, nil, s)
+	if err != nil {
+		return notesync.NoteImage{}, err
+	}
+	// do() caps the body at 32 MB; if the server declared more, we got a truncated
+	// (corrupt) image — drop it rather than store garbage.
+	if resp != nil && resp.ContentLength > int64(len(data)) {
+		return notesync.NoteImage{}, fmt.Errorf("icloud: image %s truncated (%d of %d bytes)", img.ID, len(data), resp.ContentLength)
+	}
+	img.Data = data
+	img.ContentType = http.DetectContentType(data)
+	return img, nil
 }
 
 // PushNote creates or updates a note, translating CloudKit conflicts.

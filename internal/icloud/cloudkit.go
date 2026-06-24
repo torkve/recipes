@@ -71,6 +71,26 @@ func (r ckRecord) intField(names ...string) int64 {
 	return 0
 }
 
+// assetField returns the downloadURL and decrypted size of an ASSETID field
+// (e.g. Media.Asset), or "",0 if absent. CloudKit serves the asset plaintext at
+// downloadURL (server-side decrypted, like the ENCRYPTED_BYTES text fields).
+func (r ckRecord) assetField(names ...string) (url string, size int64) {
+	for _, n := range names {
+		f, ok := r.Fields[n]
+		if !ok {
+			continue
+		}
+		var a struct {
+			DownloadURL string `json:"downloadURL"`
+			Size        int64  `json:"size"`
+		}
+		if err := json.Unmarshal(f.Value, &a); err == nil && a.DownloadURL != "" {
+			return a.DownloadURL, a.Size
+		}
+	}
+	return "", 0
+}
+
 // decodedField returns an ENCRYPTED_BYTES field decoded to its plaintext.
 // CloudKit Web Services decrypts these server-side (via the account's PCS
 // cookies) and returns base64 of the plaintext, so we just base64-decode. Falls
@@ -90,8 +110,8 @@ func (r ckRecord) decodedField(names ...string) string {
 // records and fields we map. Folder is not indexable for records/query, so the
 // whole Notes zone is enumerated via changes/zone instead.
 var (
-	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate"}
-	notesDesiredRecordTypes = []string{"Note", "Folder"}
+	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate", "Media", "Asset"}
+	notesDesiredRecordTypes = []string{"Note", "Folder", "Attachment", "Media"}
 
 	// Folder-only scan for the picker / push (cheap — no note bodies).
 	folderDesiredKeys        = []string{"TitleEncrypted", "ParentFolder"}

@@ -77,7 +77,7 @@ func (e *Engine) PullUser(ctx context.Context, userID int64) (PullReport, error)
 
 		existing, err := e.store.GetRecipeByNoteID(ctx, string(n.ID))
 		if errors.Is(err, store.ErrNotFound) {
-			in := e.buildRecipeInput(n, catID, userID)
+			in := e.buildRecipeInput(ctx, sess, n, catID, userID)
 			rec, err := e.store.CreateRecipe(ctx, in)
 			if err != nil {
 				return rep, err
@@ -121,7 +121,7 @@ func (e *Engine) PullUser(ctx context.Context, userID int64) (PullReport, error)
 		case DecisionNoOp, DecisionApplyLocal:
 			rep.Skipped++
 		case DecisionApplyRemote:
-			if err := e.applyRemote(ctx, userID, existing, n); err != nil {
+			if err := e.applyRemote(ctx, sess, userID, existing, n); err != nil {
 				return rep, err
 			}
 			rep.Updated++
@@ -135,8 +135,8 @@ func (e *Engine) PullUser(ctx context.Context, userID int64) (PullReport, error)
 }
 
 // applyRemote overwrites a recipe from a note, keeping its current category.
-func (e *Engine) applyRemote(ctx context.Context, userID int64, rec *models.Recipe, n Note) error {
-	in := e.buildRecipeInput(n, rec.CategoryID, userID)
+func (e *Engine) applyRemote(ctx context.Context, sess Session, userID int64, rec *models.Recipe, n Note) error {
+	in := e.buildRecipeInput(ctx, sess, n, rec.CategoryID, userID)
 	if err := e.store.UpdateRecipe(ctx, rec.ID, in); err != nil {
 		return err
 	}

@@ -3,11 +3,21 @@ package notesync
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"strings"
 
 	"recipes/internal/models"
 	"recipes/internal/store"
 )
+
+// imgMarkerRE matches the inline-image placeholder the iCloud parser puts in a
+// note body. It is stripped from the fingerprint so an imaged note and its
+// imported recipe (which carries a re-hosted <img> tag instead) hash equal.
+var imgMarkerRE = regexp.MustCompile(`@@IMG:[^@]*@@`)
+
+// imgMarker is the body placeholder for the image with the given id (the iCloud
+// attachment record name), matching what the iCloud note parser emits.
+func imgMarker(id string) string { return "@@IMG:" + id + "@@" }
 
 // Decision is the outcome of comparing a recipe and its linked note against the
 // last-synced base.
@@ -52,7 +62,7 @@ func fingerprint(title string, ings []models.IngredientBlock, plainSteps string)
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString(strings.Join(strings.Fields(plainSteps), " "))
+	b.WriteString(strings.Join(strings.Fields(imgMarkerRE.ReplaceAllString(plainSteps, "")), " "))
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
 }

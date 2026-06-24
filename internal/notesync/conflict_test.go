@@ -41,6 +41,26 @@ func TestHashRecipeNoteEquivalence(t *testing.T) {
 	}
 }
 
+func TestHashRecipeNoteEquivalenceWithImage(t *testing.T) {
+	// An imaged note carries an "@@IMG:<id>@@" marker in its body; the imported
+	// recipe carries the re-hosted <img> tag instead. Image markers must be
+	// excluded from the fingerprint on both sides, so the two still hash equal —
+	// otherwise every imaged recipe would diverge from its note on the next pull.
+	r := &models.Recipe{
+		Title:       "Брамбораки",
+		Ingredients: []models.IngredientBlock{{Items: []string{"картофель"}}},
+		StepsHTML:   `<p>Натереть.</p><img src="/uploads/abc.jpg" alt=""><p>Жарить.</p>`,
+	}
+	n := Note{
+		Title:      "Брамбораки",
+		Checklists: [][]string{{"картофель"}},
+		BodyHTML:   "Натереть.\n@@IMG:CF8663E7-8ED6-44DA-8B6A-B508AAFBC808@@\nЖарить.",
+	}
+	if HashRecipe(r) != HashNote(n) {
+		t.Fatalf("imaged hash mismatch:\n recipe=%s\n note  =%s", HashRecipe(r), HashNote(n))
+	}
+}
+
 func TestHashChangesWithContent(t *testing.T) {
 	r := &models.Recipe{Title: "A", StepsHTML: "<p>x</p>"}
 	r2 := &models.Recipe{Title: "A", StepsHTML: "<p>y</p>"}

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"io"
+	"regexp"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -14,8 +15,23 @@ import (
 // against live notes): NoteStoreProto.document=2, Document.note=3,
 // Note.note_text=2, Note.attribute_run=5 (repeated),
 // AttributeRun.length=1, AttributeRun.paragraph_style=2,
-// ParagraphStyle.style_type=1. A style_type of 103 marks a checklist paragraph.
+// ParagraphStyle.style_type=1, AttributeRun.attachment_info=12,
+// AttachmentInfo.attachment_identifier=1, AttachmentInfo.type_uti=2.
+// A style_type of 103 marks a checklist paragraph.
 const checklistStyleType = 103
+
+// imgToken marks an inline image in the steps text; the sync engine substitutes
+// it for the re-hosted <img> tag (and the hash projection strips it). The id is
+// the image Attachment record's name, resolved to a download URL by the provider.
+var imgTokenRE = regexp.MustCompile(`@@IMG:[^@]*@@`)
+
+func imgToken(id string) string { return "@@IMG:" + id + "@@" }
+
+// stripImgTokens removes any inline-image markers and trims the result, for
+// paragraphs (titles, ingredients, subtitles) where a marker must not survive.
+func stripImgTokens(s string) string {
+	return strings.TrimSpace(imgTokenRE.ReplaceAllString(s, ""))
+}
 
 // inflate decompresses an Apple Notes blob (gzip, or raw zlib as a fallback).
 func inflate(blob []byte) ([]byte, error) {
@@ -98,30 +114,32 @@ func pbWalk(msg []byte, fn func(num protowire.Number, typ protowire.Type, b []by
 }
 
 // parseNoteBody decodes an Apple Notes TextDataEncrypted blob into ingredient
-// blocks (checklist lines, with an optional "# subtitle" leading item) and the
-// remaining body as plain-text steps. ok is false when the blob can't be parsed
-// (caller falls back to the snippet).
-func parseNoteBody(blob []byte) (ingredientBlocks [][]string, steps string, ok bool) {
+// blocks (checklist lines, with an optional "# subtitle" leading item), the
+// remaining body as plain-text steps (with @@IMG:id@@ markers where inline images
+// appear), and the ordered ids of those images. ok is false when the blob can't
+// be parsed (caller falls back to the snippet).
+func parseNoteBody(blob []byte) (ingredientBlocks [][]string, steps string, imageIDs []string, ok bool) {
 	data, err := inflate(blob)
 	if err != nil {
-		return nil, "", false
+		return nil, "", nil, false
 	}
 	note := pbBytes(pbBytes(data, 2), 3) // NoteStoreProto.document.note
 	if note == nil {
-		return nil, "", false
+		return nil, "", nil, false
 	}
 	text := string(pbBytes(note, 2)) // note_text
 	if text == "" {
-		return nil, "", false
+		return nil, "", nil, false
 	}
 
-	// Style per character from the ordered attribute runs (lengths are ~rune
-	// counts for the text we handle).
+	// Style and any inline-image attachment per character, from the ordered
+	// attribute runs (lengths are ~rune counts for the text we handle).
 	runes := []rune(text)
 	styleAt := make([]int, len(runes))
 	for i := range styleAt {
 		styleAt[i] = -1
 	}
+	attachAt := map[int]string{}
 	pos := 0
 	pbEachBytes(note, 5, func(run []byte) {
 		length := int(pbVarint(run, 1))
@@ -129,19 +147,43 @@ func parseNoteBody(blob []byte) (ingredientBlocks [][]string, steps string, ok b
 		if ps := pbBytes(run, 2); ps != nil {
 			style = int(pbVarint(ps, 1))
 		}
+		// attachment_info (field 12): only image attachments (public.* UTIs) are
+		// inlined; tables/hashtags/drawings are left to be stripped out.
+		var attachID string
+		if ai := pbBytes(run, 12); ai != nil {
+			if uti := string(pbBytes(ai, 2)); strings.HasPrefix(uti, "public.") {
+				attachID = string(pbBytes(ai, 1))
+			}
+		}
 		for j := 0; j < length && pos < len(styleAt); j++ {
 			styleAt[pos] = style
+			if attachID != "" {
+				attachAt[pos] = attachID
+			}
 			pos++
 		}
 	})
 
-	return groupParagraphs(runes, styleAt)
+	blocks, steps, ok := groupParagraphs(runes, styleAt, attachAt)
+	if !ok {
+		return nil, "", nil, false
+	}
+	seen := map[string]bool{}
+	for _, m := range imgTokenRE.FindAllString(steps, -1) {
+		id := strings.TrimSuffix(strings.TrimPrefix(m, "@@IMG:"), "@@")
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		imageIDs = append(imageIDs, id)
+	}
+	return blocks, steps, imageIDs, true
 }
 
 // groupParagraphs splits the styled text into paragraphs and maps them to
 // ingredient blocks (checklist paragraphs) and steps (the rest), skipping the
 // title (first paragraph).
-func groupParagraphs(runes []rune, styleAt []int) (blocks [][]string, steps string, ok bool) {
+func groupParagraphs(runes []rune, styleAt []int, attachAt map[int]string) (blocks [][]string, steps string, ok bool) {
 	type para struct {
 		text  string
 		style int
@@ -149,17 +191,22 @@ func groupParagraphs(runes []rune, styleAt []int) (blocks [][]string, steps stri
 	var paras []para
 	start := 0
 	emit := func(end int) {
-		txt := strings.Map(func(r rune) rune {
+		var sb strings.Builder
+		for p := start; p < end; p++ {
+			r := runes[p]
 			if r == '￼' { // attachment placeholder
-				return -1
+				if id := attachAt[p]; id != "" {
+					sb.WriteString(imgToken(id)) // inline image -> marker
+				}
+				continue // non-image attachments are dropped
 			}
-			return r
-		}, string(runes[start:end]))
+			sb.WriteRune(r)
+		}
 		style := -1
 		if start < len(styleAt) {
 			style = styleAt[start]
 		}
-		paras = append(paras, para{strings.TrimSpace(txt), style})
+		paras = append(paras, para{strings.TrimSpace(sb.String()), style})
 	}
 	for i, r := range runes {
 		if r == '\n' {
@@ -194,15 +241,15 @@ func groupParagraphs(runes []rune, styleAt []int) (blocks [][]string, steps stri
 				cur = append(cur, "# "+pendingSubtitle)
 				pendingSubtitle = ""
 			}
-			cur = append(cur, p.text)
+			cur = append(cur, stripImgTokens(p.text)) // ingredients are plain text
 			continue
 		}
 		flushBlock()
 		flushSubtitle()
-		if strings.HasSuffix(p.text, ":") {
-			pendingSubtitle = strings.TrimSuffix(p.text, ":")
+		if clean := stripImgTokens(p.text); strings.HasSuffix(clean, ":") {
+			pendingSubtitle = strings.TrimSuffix(clean, ":")
 		} else {
-			stepLines = append(stepLines, p.text)
+			stepLines = append(stepLines, p.text) // keep image markers in steps
 		}
 	}
 	flushBlock()

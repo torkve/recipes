@@ -11,8 +11,10 @@ import (
 // the mapping below is intentionally tolerant (it tries several candidates and
 // degrades gracefully) so it is easy to correct against live data.
 const (
-	recordTypeNote   = "Note"
-	recordTypeFolder = "Folder"
+	recordTypeNote       = "Note"
+	recordTypeFolder     = "Folder"
+	recordTypeAttachment = "Attachment"
+	recordTypeMedia      = "Media"
 )
 
 // referenceField decodes a CloudKit reference field to the referenced record
@@ -57,9 +59,15 @@ func recordToNote(r ckRecord) notesync.Note {
 	// Prefer the full body (checklist ingredients + steps) from the note blob;
 	// fall back to the plain-text snippet preview when it can't be parsed.
 	if td := r.decodedField("TextDataEncrypted"); td != "" {
-		if blocks, steps, ok := parseNoteBody([]byte(td)); ok {
+		if blocks, steps, imageIDs, ok := parseNoteBody([]byte(td)); ok {
 			n.Checklists = blocks
 			n.BodyHTML = steps
+			// Inline images are referenced by @@IMG:id@@ markers in BodyHTML; the
+			// provider resolves each id to a download URL (FetchZone) and the engine
+			// fetches the bytes only for notes it imports.
+			for _, id := range imageIDs {
+				n.Images = append(n.Images, notesync.NoteImage{ID: id})
+			}
 			return n
 		}
 	}

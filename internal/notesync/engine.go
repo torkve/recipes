@@ -213,7 +213,7 @@ func (e *Engine) ResolveConflict(ctx context.Context, userID int64, conflictID i
 			}
 			for _, n := range notes {
 				if string(n.ID) == *rec.ICloudNoteID {
-					if err := e.applyRemote(ctx, userID, rec, n); err != nil {
+					if err := e.applyRemote(ctx, sess, userID, rec, n); err != nil {
 						return err
 					}
 					break
@@ -245,18 +245,25 @@ func (e *Engine) saveImage(img NoteImage) (string, error) {
 	return name, nil
 }
 
-// buildRecipeInput maps a note to a store.RecipeInput, saving images and
-// sanitizing the body.
-func (e *Engine) buildRecipeInput(n Note, categoryID, userID int64) store.RecipeInput {
-	var imgTags strings.Builder
+// buildRecipeInput maps a note to a store.RecipeInput, downloading + saving its
+// inline images and sanitizing the body. Each image is substituted at its
+// @@IMG:id@@ marker; any marker left unresolved (download failed or unsupported
+// type) is stripped so it never reaches the rendered recipe.
+func (e *Engine) buildRecipeInput(ctx context.Context, sess Session, n Note, categoryID, userID int64) store.RecipeInput {
+	body := n.BodyHTML
 	for _, img := range n.Images {
-		name, err := e.saveImage(img)
+		fetched, err := e.provider.FetchImage(ctx, sess, img)
+		if err != nil {
+			continue // download failed; its marker is stripped below
+		}
+		name, err := e.saveImage(fetched)
 		if err != nil {
 			continue // skip unsupported/broken images
 		}
-		imgTags.WriteString(`<img src="/uploads/` + name + `">`)
+		body = strings.ReplaceAll(body, imgMarker(img.ID), `<img src="/uploads/`+name+`" alt="">`)
 	}
-	steps := sanitize.StepsHTML(n.BodyHTML + imgTags.String())
+	body = imgMarkerRE.ReplaceAllString(body, "") // drop any unresolved markers
+	steps := sanitize.StepsHTML(body)
 	noteID := string(n.ID)
 	etag := string(n.Etag)
 	uid := userID

@@ -3,12 +3,18 @@ package notesync
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"recipes/internal/models"
 	"recipes/internal/store"
 )
+
+// pngBytes is a minimal payload that http.DetectContentType reports as image/png
+// (only the 8-byte signature is inspected).
+var pngBytes = append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
 
 // fakeProvider implements SyncProvider and Binder from in-memory state.
 type fakeProvider struct {
@@ -16,6 +22,10 @@ type fakeProvider struct {
 	notes     []Note
 	pushed    []Note
 	pushCount int
+
+	images     map[string][]byte // image ref -> bytes returned by FetchImage
+	imageCalls int
+	imageErr   bool // when true, FetchImage always fails
 }
 
 type fakeSession struct{ data []byte }
@@ -37,6 +47,19 @@ func (p *fakeProvider) ListFolders(ctx context.Context, sess Session, root Folde
 }
 func (p *fakeProvider) FetchZone(ctx context.Context, sess Session, root FolderID, since string) ([]Folder, []Note, string, error) {
 	return p.folders, p.notes, "", nil
+}
+func (p *fakeProvider) FetchImage(ctx context.Context, sess Session, img NoteImage) (NoteImage, error) {
+	p.imageCalls++
+	if p.imageErr {
+		return NoteImage{}, fmt.Errorf("fake: download failed")
+	}
+	data, ok := p.images[img.Ref]
+	if !ok {
+		return NoteImage{}, fmt.Errorf("fake: no image for ref %q", img.Ref)
+	}
+	img.Data = data
+	img.ContentType = http.DetectContentType(data)
+	return img, nil
 }
 func (p *fakeProvider) PushNote(ctx context.Context, sess Session, n Note, expected Etag) (Note, error) {
 	p.pushCount++
@@ -208,6 +231,71 @@ func TestPushCreatesNoteForNewRecipe(t *testing.T) {
 	rep, _ = eng.PushUser(ctx, uid)
 	if rep.Created != 0 || rep.Updated != 0 {
 		t.Fatalf("second push should be no-op, got %+v", rep)
+	}
+}
+
+func TestPullImportsInlineImage(t *testing.T) {
+	ctx := context.Background()
+	eng, st, fp, uid := newTestEngine(t)
+	mustBind(t, eng, uid)
+	fp.folders = []Folder{{ID: "f1", Name: "Выпечка"}}
+	fp.images = map[string][]byte{"ref-1": pngBytes}
+	fp.notes = []Note{{ID: "n1", FolderID: "f1", Etag: "e1", Title: "Пирог",
+		BodyHTML: "Смешать @@IMG:att-1@@ и испечь.",
+		Images:   []NoteImage{{ID: "att-1", Ref: "ref-1"}}}}
+
+	if _, err := eng.PullUser(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.GetRecipeByNoteID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.StepsHTML, `<img src="/uploads/`) {
+		t.Fatalf("inline image not substituted: %q", rec.StepsHTML)
+	}
+	if strings.Contains(rec.StepsHTML, "@@IMG") {
+		t.Fatalf("raw marker leaked into steps: %q", rec.StepsHTML)
+	}
+	imgs, _ := st.ImagesForRecipe(ctx, rec.ID)
+	if len(imgs) != 1 {
+		t.Fatalf("expected 1 recorded image, got %d", len(imgs))
+	}
+
+	// Second pull: the note is unchanged, so it is skipped and no image is
+	// re-downloaded (no file churn).
+	calls := fp.imageCalls
+	rep, _ := eng.PullUser(ctx, uid)
+	if rep.Created != 0 || rep.Updated != 0 {
+		t.Fatalf("second pull should be a no-op, got %+v", rep)
+	}
+	if fp.imageCalls != calls {
+		t.Fatalf("image re-downloaded on idempotent pull: %d -> %d", calls, fp.imageCalls)
+	}
+}
+
+func TestPullDropsUnresolvableImageMarker(t *testing.T) {
+	ctx := context.Background()
+	eng, st, fp, uid := newTestEngine(t)
+	mustBind(t, eng, uid)
+	fp.folders = []Folder{{ID: "f1", Name: "Выпечка"}}
+	fp.imageErr = true // every download fails
+	fp.notes = []Note{{ID: "n1", FolderID: "f1", Etag: "e1", Title: "Пирог",
+		BodyHTML: "Шаг @@IMG:att-1@@ готово.",
+		Images:   []NoteImage{{ID: "att-1", Ref: "ref-1"}}}}
+
+	if _, err := eng.PullUser(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := st.GetRecipeByNoteID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rec.StepsHTML, "@@IMG") || strings.Contains(rec.StepsHTML, "<img") {
+		t.Fatalf("failed image should leave no marker or tag: %q", rec.StepsHTML)
+	}
+	if got := store.PlainTextHTML(rec.StepsHTML); got != "Шаг готово." {
+		t.Fatalf("steps = %q, want %q", got, "Шаг готово.")
 	}
 }
 

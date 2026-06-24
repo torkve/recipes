@@ -29,9 +29,12 @@ type Folder struct {
 	Name     string
 }
 
-// NoteImage is a decoded image attachment of a note.
+// NoteImage is an image attachment of a note. On import FetchZone returns it as
+// metadata (ID + Ref, Data nil); the engine calls FetchImage to fill Data only
+// for notes it actually imports. On push the engine sets ID=filename + Data.
 type NoteImage struct {
-	ID          string
+	ID          string // attachment identity; matches the @@IMG:id@@ body marker
+	Ref         string // opaque provider locator for FetchImage (e.g. download URL)
 	ContentType string
 	Data        []byte
 }
@@ -78,8 +81,13 @@ type SyncProvider interface {
 
 	// FetchZone enumerates the zone in a single pass, returning the folders under
 	// root and the in-scope notes changed since the given token, plus the next
-	// token to persist. since == "" performs a full enumeration.
+	// token to persist. since == "" performs a full enumeration. Note images are
+	// returned as metadata (Ref set, Data nil) for the engine to fetch on import.
 	FetchZone(ctx context.Context, sess Session, root FolderID, since string) (folders []Folder, notes []Note, next string, err error)
+
+	// FetchImage downloads the bytes for one image returned by FetchZone,
+	// returning the same NoteImage with Data and ContentType filled in.
+	FetchImage(ctx context.Context, sess Session, img NoteImage) (NoteImage, error)
 
 	// PushNote creates (expectedEtag == "") or updates a note. A mismatch
 	// between expectedEtag and the live note must be reported as ErrEtagConflict

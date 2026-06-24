@@ -9,21 +9,39 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+// noteRun describes one attribute run for buildNoteBlob: a rune length, a
+// paragraph style_type, and (optionally) an inline attachment id + type UTI.
+type noteRun struct {
+	length    int
+	styleType int
+	attachID  string
+	attachUTI string
+}
+
 // buildNoteBlob assembles a minimal Apple Notes protobuf (note_text + attribute
 // runs) and gzips it, mirroring TextDataEncrypted.
-func buildNoteBlob(text string, runs [][2]int) []byte {
+func buildNoteBlob(text string, runs []noteRun) []byte {
 	var note []byte
 	note = protowire.AppendTag(note, 2, protowire.BytesType) // note_text
 	note = protowire.AppendBytes(note, []byte(text))
-	for _, r := range runs { // r = {length, styleType}
+	for _, r := range runs {
 		var ps []byte
 		ps = protowire.AppendTag(ps, 1, protowire.VarintType) // style_type
-		ps = protowire.AppendVarint(ps, uint64(r[1]))
+		ps = protowire.AppendVarint(ps, uint64(r.styleType))
 		var run []byte
 		run = protowire.AppendTag(run, 1, protowire.VarintType) // length
-		run = protowire.AppendVarint(run, uint64(r[0]))
+		run = protowire.AppendVarint(run, uint64(r.length))
 		run = protowire.AppendTag(run, 2, protowire.BytesType) // paragraph_style
 		run = protowire.AppendBytes(run, ps)
+		if r.attachID != "" {
+			var ai []byte
+			ai = protowire.AppendTag(ai, 1, protowire.BytesType) // attachment_identifier
+			ai = protowire.AppendBytes(ai, []byte(r.attachID))
+			ai = protowire.AppendTag(ai, 2, protowire.BytesType) // type_uti
+			ai = protowire.AppendBytes(ai, []byte(r.attachUTI))
+			run = protowire.AppendTag(run, 12, protowire.BytesType) // attachment_info
+			run = protowire.AppendBytes(run, ai)
+		}
 		note = protowire.AppendTag(note, 5, protowire.BytesType) // attribute_run
 		note = protowire.AppendBytes(note, run)
 	}
@@ -43,13 +61,13 @@ func buildNoteBlob(text string, runs [][2]int) []byte {
 
 func TestParseNoteBodyChecklistsAndSteps(t *testing.T) {
 	text := "Брамбораки\nКартофель\nМука\nСмешать всё\n"
-	runs := [][2]int{
-		{len([]rune("Брамбораки\n")), 0},   // title
-		{len([]rune("Картофель\n")), 103},  // ingredient
-		{len([]rune("Мука\n")), 103},       // ingredient
-		{len([]rune("Смешать всё\n")), -1}, // step
+	runs := []noteRun{
+		{length: len([]rune("Брамбораки\n")), styleType: 0},   // title
+		{length: len([]rune("Картофель\n")), styleType: 103},  // ingredient
+		{length: len([]rune("Мука\n")), styleType: 103},       // ingredient
+		{length: len([]rune("Смешать всё\n")), styleType: -1}, // step
 	}
-	blocks, steps, ok := parseNoteBody(buildNoteBlob(text, runs))
+	blocks, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))
 	if !ok {
 		t.Fatal("parse failed")
 	}
@@ -60,17 +78,20 @@ func TestParseNoteBodyChecklistsAndSteps(t *testing.T) {
 	if steps != "Смешать всё" {
 		t.Fatalf("steps=%q", steps)
 	}
+	if len(imgs) != 0 {
+		t.Fatalf("unexpected images: %v", imgs)
+	}
 }
 
 func TestParseNoteBodySubtitle(t *testing.T) {
 	text := "Блинчики\nТесто:\nМука\nГотовим\n"
-	runs := [][2]int{
-		{len([]rune("Блинчики\n")), 0},
-		{len([]rune("Тесто:\n")), -1}, // subtitle (ends with ':', precedes checklist)
-		{len([]rune("Мука\n")), 103},
-		{len([]rune("Готовим\n")), -1},
+	runs := []noteRun{
+		{length: len([]rune("Блинчики\n")), styleType: 0},
+		{length: len([]rune("Тесто:\n")), styleType: -1}, // subtitle (ends with ':', precedes checklist)
+		{length: len([]rune("Мука\n")), styleType: 103},
+		{length: len([]rune("Готовим\n")), styleType: -1},
 	}
-	blocks, steps, ok := parseNoteBody(buildNoteBlob(text, runs))
+	blocks, steps, _, ok := parseNoteBody(buildNoteBlob(text, runs))
 	if !ok {
 		t.Fatal("parse failed")
 	}
@@ -83,8 +104,37 @@ func TestParseNoteBodySubtitle(t *testing.T) {
 	}
 }
 
+// An inline image (a U+FFFC in a step paragraph with a public.* attachment)
+// becomes an @@IMG:id@@ marker in steps and is reported in imageIDs; a non-image
+// attachment (e.g. a table) is dropped without a marker.
+func TestParseNoteBodyInlineImage(t *testing.T) {
+	text := "Пирог\nПеремешать ￼ дальше\n￼\n"
+	runs := []noteRun{
+		{length: len([]rune("Пирог\n")), styleType: 0},
+		{length: len([]rune("Перемешать ")), styleType: -1},
+		{length: 1, styleType: -1, attachID: "IMG-AAA", attachUTI: "public.jpeg"},
+		{length: len([]rune(" дальше\n")), styleType: -1},
+		{length: 1, styleType: -1, attachID: "TBL-BBB", attachUTI: "com.apple.notes.table"},
+		{length: 1, styleType: -1}, // trailing newline of the table line
+	}
+	blocks, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("unexpected blocks: %v", blocks)
+	}
+	wantSteps := "Перемешать @@IMG:IMG-AAA@@ дальше"
+	if steps != wantSteps {
+		t.Fatalf("steps=%q want %q", steps, wantSteps)
+	}
+	if !reflect.DeepEqual(imgs, []string{"IMG-AAA"}) {
+		t.Fatalf("imageIDs=%v want [IMG-AAA]", imgs)
+	}
+}
+
 func TestParseNoteBodyInvalid(t *testing.T) {
-	if _, _, ok := parseNoteBody([]byte("not gzip")); ok {
+	if _, _, _, ok := parseNoteBody([]byte("not gzip")); ok {
 		t.Fatal("expected parse failure on garbage")
 	}
 }

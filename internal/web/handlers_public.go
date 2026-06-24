@@ -5,7 +5,9 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"recipes/internal/models"
 	"recipes/internal/sanitize"
 	"recipes/internal/store"
 )
@@ -30,7 +32,14 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	recipes, err := s.store.ListRecipes(ctx, filter, 0, 0)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	var recipes []models.Recipe
+	if query != "" {
+		recipes, err = s.store.SearchRecipes(ctx, query, filter)
+	} else {
+		recipes, err = s.store.ListRecipes(ctx, filter, 0, 0)
+	}
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -41,7 +50,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	data["Categories"] = cats
 	data["Recipes"] = recipes
 	data["SelectedCat"] = selected
-	data["Query"] = ""
+	data["Query"] = query
 	s.render(w, r, "home", http.StatusOK, data)
 }
 

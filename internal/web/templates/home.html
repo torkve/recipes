@@ -1,10 +1,24 @@
 {{define "content"}}
 <section class="catalog">
-  <nav class="category-nav" aria-label="Категории">
-    <a class="chip{{if not .SelectedCat}} active{{end}}" href="/">Все</a>
-    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}">{{.Name}}</a>{{end}}
+  <form class="search" method="get" action="/" id="search-form" role="search">
+    <input type="search" name="q" id="search-input" value="{{.Query}}"
+           placeholder="Поиск по названию, ингредиентам, шагам" autocomplete="off" aria-label="Поиск">
+    <input type="hidden" name="cat" id="search-cat" value="{{if .SelectedCat}}{{.SelectedCat}}{{end}}">
+    <button type="submit" class="btn">Найти</button>
+  </form>
+
+  <nav class="category-nav" id="category-nav" aria-label="Категории">
+    <a class="chip{{if not .SelectedCat}} active{{end}}" href="/" data-cat="">Все</a>
+    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}" data-cat="{{.ID}}">{{.Name}}</a>{{end}}
   </nav>
 
+  <div id="results">
+    {{template "results" .}}
+  </div>
+</section>
+{{end}}
+
+{{define "results"}}
   {{if .Recipes}}
   <ul class="recipe-grid">
     {{range .Recipes}}
@@ -17,7 +31,8 @@
     {{end}}
   </ul>
   {{else}}
-  <p class="empty">Рецептов пока нет.</p>
+  <p class="empty">{{if .Query}}Ничего не найдено.{{else}}Рецептов пока нет.{{end}}</p>
   {{end}}
-</section>
 {{end}}
+
+{{define "scripts"}}<script src="/static/js/search.js" defer></script>{{end}}

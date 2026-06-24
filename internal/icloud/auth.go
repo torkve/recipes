@@ -37,6 +37,10 @@ type authState struct {
 	TrustToken     string        `json:"trust_token"`
 	Country        string        `json:"country"`
 	Cookies        []SavedCookie `json:"cookies"`
+
+	// 2FA delivery: "device" (trusted-device push) or "sms" (to PhoneID).
+	Mode    string `json:"mode"`
+	PhoneID int    `json:"phone_id"`
 }
 
 func newJarClient() *http.Client {
@@ -54,7 +58,16 @@ func randState() string {
 // session headers (scnt / session-id / auth-attributes), then folds the
 // response's session headers and cookies back into st.
 func (p *Provider) idmsaDo(ctx context.Context, method, url string, st *authState, body []byte) ([]byte, *http.Response, error) {
+	return p.idmsaDoAccept(ctx, method, url, "", st, body)
+}
+
+// idmsaDoAccept is idmsaDo with an optional Accept override (e.g. strict
+// "application/json" for the 2FA context, which otherwise returns the HTML widget).
+func (p *Provider) idmsaDoAccept(ctx context.Context, method, url, accept string, st *authState, body []byte) ([]byte, *http.Response, error) {
 	headers := authHeaders(st.FrameID)
+	if accept != "" {
+		headers["Accept"] = accept
+	}
 	if st.Scnt != "" {
 		headers[hdrScnt] = st.Scnt
 	}
@@ -95,25 +108,37 @@ func captureSessionState(resp *http.Response, st *authState) {
 	st.Cookies = mergeCookies(st.Cookies, saveCookies(resp))
 }
 
-// requestTrustedDeviceCode asks Apple to send the HSA2 security code to the
-// account's trusted devices. It fetches the 2FA context (for diagnostics) and
-// then issues the explicit "send code" request. Both calls are best-effort:
-// failures are logged but must not block showing the code-entry form (the GET
-// alone often primes the push).
-func (p *Provider) requestTrustedDeviceCode(ctx context.Context, st *authState) {
-	if body, resp, err := p.idmsaDo(ctx, http.MethodGet, idmsaBase, st, nil); err != nil {
-		log.Printf("icloud: 2FA context fetch failed: %v", err)
-	} else if resp.StatusCode >= 400 {
-		log.Printf("icloud: 2FA context fetch status %d", resp.StatusCode)
-	} else {
-		td, ph := parseAuthContext(body)
-		log.Printf("icloud: 2FA context: trustedDevices=%d trustedPhones=%d", td, ph)
-	}
+// requestSecurityCode fetches the 2FA context and sends the HSA2 code. Trusted
+// devices receive the code automatically on the 409; accounts with no trusted
+// device but a trusted phone get an SMS via PUT /verify/phone. The chosen mode
+// (and phone id) is recorded in st so Complete verifies against the right
+// endpoint. Best-effort: failures are logged, never block the code form.
+func (p *Provider) requestSecurityCode(ctx context.Context, st *authState) {
+	st.Mode = "device" // default: trusted-device code is auto-sent on the 409
 
-	if _, resp, err := p.idmsaDo(ctx, http.MethodPut, idmsaBase+"/verify/trusteddevice", st, nil); err != nil {
-		log.Printf("icloud: request trusted-device code failed: %v", err)
-	} else {
-		log.Printf("icloud: request trusted-device code: status %d", resp.StatusCode)
+	body, resp, err := p.idmsaDoAccept(ctx, http.MethodGet, idmsaBase, "application/json", st, nil)
+	if err != nil {
+		log.Printf("icloud: 2FA context fetch failed: %v", err)
+		return
+	}
+	log.Printf("icloud: 2FA context (%d): %s", resp.StatusCode, truncate(body))
+	td, phoneIDs := parseAuthContext(body)
+	log.Printf("icloud: 2FA context: trustedDevices=%d trustedPhones=%d", td, len(phoneIDs))
+
+	// If there is no trusted device but a trusted phone, request an SMS code.
+	if td == 0 && len(phoneIDs) > 0 {
+		st.Mode = "sms"
+		st.PhoneID = phoneIDs[0]
+		reqBody, berr := buildPhoneRequestBody(st.PhoneID)
+		if berr != nil {
+			log.Printf("icloud: build SMS request failed: %v", berr)
+			return
+		}
+		if _, r2, e2 := p.idmsaDo(ctx, http.MethodPut, idmsaBase+"/verify/phone", st, reqBody); e2 != nil {
+			log.Printf("icloud: request SMS code failed: %v", e2)
+		} else {
+			log.Printf("icloud: request SMS code to phone %d: status %d", st.PhoneID, r2.StatusCode)
+		}
 	}
 }
 
@@ -196,7 +221,7 @@ func (p *Provider) Begin(ctx context.Context, appleID, password string) (notesyn
 		// headless flow, so explicitly request a trusted-device code before
 		// returning. This also rotates scnt/session-id into st for Complete.
 		log.Printf("icloud: SRP variant %d accepted (2FA required)", p.srpVariant)
-		p.requestTrustedDeviceCode(ctx, st)
+		p.requestSecurityCode(ctx, st)
 		raw, _ := json.Marshal(st)
 		return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
 	case http.StatusOK, http.StatusNoContent, http.StatusFound:
@@ -224,12 +249,21 @@ func (p *Provider) Complete(ctx context.Context, handle notesync.BindHandle, cod
 		return nil, fmt.Errorf("icloud: bad bind handle: %w", err)
 	}
 
-	// Verify the security code.
-	codeBody, err := buildSecurityCodeBody(code)
+	// Verify the security code against the endpoint matching how it was sent.
+	var codeBody []byte
+	var verifyURL string
+	var err error
+	if st.Mode == "sms" {
+		codeBody, err = buildPhoneSecurityCodeBody(st.PhoneID, code)
+		verifyURL = idmsaBase + "/verify/phone/securitycode"
+	} else {
+		codeBody, err = buildSecurityCodeBody(code)
+		verifyURL = idmsaBase + "/verify/trusteddevice/securitycode"
+	}
 	if err != nil {
 		return nil, err
 	}
-	body, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/verify/trusteddevice/securitycode", &st, codeBody)
+	body, resp, err := p.idmsaDo(ctx, http.MethodPost, verifyURL, &st, codeBody)
 	if err != nil {
 		return nil, err
 	}

@@ -73,13 +73,38 @@ func TestBuildSigninCompleteBody(t *testing.T) {
 }
 
 func TestParseAuthContext(t *testing.T) {
-	td, ph := parseAuthContext([]byte(`{"authType":"hsa2","trustedDeviceCount":2,"trustedPhoneNumbers":[{"id":1},{"id":2},{"id":3}]}`))
-	if td != 2 || ph != 3 {
-		t.Fatalf("got trustedDevices=%d phones=%d, want 2/3", td, ph)
+	// Phones nested under phoneNumberVerification (the real Apple shape).
+	td, phones := parseAuthContext([]byte(`{"authType":"hsa2","trustedDeviceCount":0,"phoneNumberVerification":{"trustedPhoneNumbers":[{"id":2},{"id":5}]}}`))
+	if td != 0 || len(phones) != 2 || phones[0] != 2 || phones[1] != 5 {
+		t.Fatalf("nested phones: got td=%d phones=%v", td, phones)
 	}
-	// Malformed input degrades to zeros, not a panic.
-	if td, ph := parseAuthContext([]byte("not json")); td != 0 || ph != 0 {
-		t.Fatalf("malformed should give 0/0, got %d/%d", td, ph)
+	// Top-level phones + a trusted device.
+	td, phones = parseAuthContext([]byte(`{"trustedDeviceCount":1,"trustedPhoneNumbers":[{"id":9}]}`))
+	if td != 1 || len(phones) != 1 || phones[0] != 9 {
+		t.Fatalf("top-level: got td=%d phones=%v", td, phones)
+	}
+	// Malformed input degrades to zero/nil, not a panic.
+	if td, phones := parseAuthContext([]byte("not json")); td != 0 || phones != nil {
+		t.Fatalf("malformed should give 0/nil, got %d/%v", td, phones)
+	}
+}
+
+func TestBuildPhoneBodies(t *testing.T) {
+	req, err := buildPhoneRequestBody(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(req); !strings.Contains(s, `"id":3`) || !strings.Contains(s, `"mode":"sms"`) {
+		t.Fatalf("phone request body: %s", s)
+	}
+	code, err := buildPhoneSecurityCodeBody(3, "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"id":3`, `"code":"123456"`, `"mode":"sms"`} {
+		if !strings.Contains(string(code), want) {
+			t.Fatalf("phone code body missing %s: %s", want, code)
+		}
 	}
 }
 

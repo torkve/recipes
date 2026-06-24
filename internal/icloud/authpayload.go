@@ -103,23 +103,57 @@ func oauthQuery(frameID string) string {
 		"&state=" + frameID + "&frame_id=" + frameID + "&authVersion=latest"
 }
 
-// authContext is the relevant slice of the GET /appleauth/auth 2FA response.
-type authContext struct {
-	AuthType            string `json:"authType"`
-	TrustedDeviceCount  int    `json:"trustedDeviceCount"`
-	TrustedPhoneNumbers []struct {
-		ID int `json:"id"`
-	} `json:"trustedPhoneNumbers"`
+type phoneNumber struct {
+	ID int `json:"id"`
 }
 
-// parseAuthContext extracts the trusted-device and trusted-phone counts from the
-// 2FA context (best-effort; returns zeros on parse failure).
-func parseAuthContext(body []byte) (trustedDevices, phones int) {
+// authContext is the relevant slice of the GET /appleauth/auth 2FA response.
+// Trusted phone numbers appear nested under phoneNumberVerification (and, on some
+// responses, at the top level), so both are read.
+type authContext struct {
+	AuthType            string        `json:"authType"`
+	TrustedDeviceCount  int           `json:"trustedDeviceCount"`
+	TrustedPhoneNumbers []phoneNumber `json:"trustedPhoneNumbers"`
+	PhoneNumberVerification struct {
+		TrustedPhoneNumbers []phoneNumber `json:"trustedPhoneNumbers"`
+	} `json:"phoneNumberVerification"`
+}
+
+// parseAuthContext extracts the trusted-device count and trusted-phone ids from
+// the 2FA context (best-effort; returns zero/nil on parse failure).
+func parseAuthContext(body []byte) (trustedDevices int, phoneIDs []int) {
 	var c authContext
 	if err := json.Unmarshal(body, &c); err != nil {
-		return 0, 0
+		return 0, nil
 	}
-	return c.TrustedDeviceCount, len(c.TrustedPhoneNumbers)
+	phones := c.TrustedPhoneNumbers
+	if len(phones) == 0 {
+		phones = c.PhoneNumberVerification.TrustedPhoneNumbers
+	}
+	for _, p := range phones {
+		if p.ID != 0 {
+			phoneIDs = append(phoneIDs, p.ID)
+		}
+	}
+	return c.TrustedDeviceCount, phoneIDs
+}
+
+// buildPhoneRequestBody asks Apple to send an SMS security code to a trusted
+// phone number.
+func buildPhoneRequestBody(phoneID int) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"phoneNumber": map[string]int{"id": phoneID},
+		"mode":        "sms",
+	})
+}
+
+// buildPhoneSecurityCodeBody verifies an SMS security code for a trusted phone.
+func buildPhoneSecurityCodeBody(phoneID int, code string) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"phoneNumber":  map[string]int{"id": phoneID},
+		"securityCode": map[string]string{"code": code},
+		"mode":         "sms",
+	})
 }
 
 // securityCodeBody is the JSON posted to verify an HSA2 2FA code.

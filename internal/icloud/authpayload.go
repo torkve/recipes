@@ -37,7 +37,7 @@ func buildSigninBody(appleID, password string, trustTokens []string) ([]byte, er
 func authHeaders(state string) map[string]string {
 	return map[string]string{
 		"Content-Type":                "application/json",
-		"Accept":                      "application/json",
+		"Accept":                      "application/json, text/javascript, */*; q=0.01",
 		"X-Apple-Widget-Key":          widgetKey,
 		"X-Apple-OAuth-Client-Id":     widgetKey,
 		"X-Apple-OAuth-Client-Type":   "firstPartyAuth",
@@ -45,7 +45,9 @@ func authHeaders(state string) map[string]string {
 		"X-Apple-OAuth-Response-Mode": "web_message",
 		"X-Apple-OAuth-Response-Type": "code",
 		"X-Apple-OAuth-State":         state,
+		"X-Requested-With":            "XMLHttpRequest",
 		"Origin":                      "https://idmsa.apple.com",
+		"Referer":                     "https://idmsa.apple.com/",
 	}
 }
 

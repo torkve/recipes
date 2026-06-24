@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 
@@ -231,13 +232,16 @@ func (p *Provider) do(ctx context.Context, method, urlStr string, headers map[st
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	setBrowserHeaders(req)
 	if s != nil {
 		for _, c := range s.Cookies {
 			req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path})
 		}
 	}
+	logRequest(method, urlStr)
 	resp, err := p.http.Do(req)
 	if err != nil {
+		log.Printf("icloud: ✗ %s %s: %v", method, stripQuery(urlStr), err)
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
@@ -245,8 +249,9 @@ func (p *Provider) do(ctx context.Context, method, urlStr string, headers map[st
 	if err != nil {
 		return nil, resp, err
 	}
+	logResponse(method, urlStr, resp.StatusCode, respBody)
 	if resp.StatusCode >= 400 {
-		return respBody, resp, fmt.Errorf("icloud: %s %s: status %d", method, urlStr, resp.StatusCode)
+		return respBody, resp, fmt.Errorf("icloud: %s %s: status %d", method, stripQuery(urlStr), resp.StatusCode)
 	}
 	return respBody, resp, nil
 }

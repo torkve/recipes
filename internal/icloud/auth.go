@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 
@@ -183,12 +184,16 @@ func (p *Provider) rawDo(ctx context.Context, method, urlStr string, headers map
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	setBrowserHeaders(req)
+	logRequest(method, urlStr)
 	resp, err := p.http.Do(req)
 	if err != nil {
+		log.Printf("icloud: ✗ %s %s: %v", method, stripQuery(urlStr), err)
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	logResponse(method, urlStr, resp.StatusCode, respBody)
 	return respBody, resp, err
 }
 

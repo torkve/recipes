@@ -4,9 +4,30 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestRequestsIdentifyAsBrowser(t *testing.T) {
+	var gotUA string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer ts.Close()
+
+	p := New(ts.Client())
+	if _, _, err := p.do(context.Background(), http.MethodGet, ts.URL, nil, nil, &Session{}); err != nil {
+		t.Fatal(err)
+	}
+	if gotUA != browserUA {
+		t.Fatalf("User-Agent = %q, want browser UA", gotUA)
+	}
+	if strings.Contains(gotUA, "Go-http-client") {
+		t.Fatal("requests still identify as the Go default client")
+	}
+}
 
 // stubTransport returns canned CloudKit responses and records whether a
 // records/modify (create) request was made.

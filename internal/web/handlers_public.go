@@ -47,7 +47,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	data := s.newPageData(r)
 	data["Title"] = ""
-	data["Categories"] = cats
+	data["Categories"] = categoryTree(cats)
 	data["Recipes"] = recipes
 	data["SelectedCat"] = selected
 	data["Query"] = query

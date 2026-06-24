@@ -115,7 +115,7 @@ func (s *Server) handleAdminCategories(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.newPageData(r)
 	data["Title"] = "Категории"
-	data["Categories"] = cats
+	data["Categories"] = categoryTree(cats)
 	if m, ok := categoryMessages[r.URL.Query().Get("msg")]; ok {
 		data["Message"] = m[0]
 		data["MessageClass"] = m[1]
@@ -242,7 +242,7 @@ func (s *Server) renderRecipeForm(w http.ResponseWriter, r *http.Request, rec *m
 	data["RecipeTitle"] = form.Title
 	data["Ingredients"] = ings
 	data["StepsHTMLSafe"] = template.HTML(form.StepsHTML) //nolint:gosec // sanitized on save and on draft
-	data["Categories"] = cats
+	data["Categories"] = categoryTree(cats)
 	data["SelectedCategoryID"] = form.SelectedCategoryID
 	data["NewCategory"] = form.NewCategory
 	data["Error"] = form.Error

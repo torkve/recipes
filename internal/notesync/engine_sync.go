@@ -50,16 +50,12 @@ func (e *Engine) PullUser(ctx context.Context, userID int64) (PullReport, error)
 	}
 	root := FolderID(acct.NotesFolder)
 
-	folders, err := e.provider.ListFolders(ctx, sess, root)
+	// A single zone scan returns both folders and notes.
+	folders, notes, _, err := e.provider.FetchZone(ctx, sess, root, "")
 	if err != nil {
 		return rep, err
 	}
 	folderCat, err := e.resolveFolderCategories(ctx, folders)
-	if err != nil {
-		return rep, err
-	}
-
-	notes, _, err := e.provider.ChangedNotes(ctx, sess, root, "")
 	if err != nil {
 		return rep, err
 	}

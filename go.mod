@@ -8,6 +8,7 @@ require (
 	github.com/gorilla/sessions v1.2.1
 	github.com/microcosm-cc/bluemonday v1.0.27
 	golang.org/x/crypto v0.52.0
+	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.46.1
 )
 

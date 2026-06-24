@@ -81,7 +81,7 @@ func TestParseZoneChanges(t *testing.T) {
 }
 
 func TestZoneChangesBody(t *testing.T) {
-	b, _ := zoneChangesBody("")
+	b, _ := zoneChangesBody("", notesDesiredKeys, notesDesiredRecordTypes)
 	s := string(b)
 	if !strings.Contains(s, `"zoneName":"Notes"`) || !strings.Contains(s, `"reverse":true`) {
 		t.Fatalf("missing zone/reverse: %s", s)
@@ -89,7 +89,7 @@ func TestZoneChangesBody(t *testing.T) {
 	if strings.Contains(s, "syncToken") {
 		t.Fatalf("empty token should be omitted: %s", s)
 	}
-	b2, _ := zoneChangesBody("TOK")
+	b2, _ := zoneChangesBody("TOK", notesDesiredKeys, notesDesiredRecordTypes)
 	if !strings.Contains(string(b2), `"syncToken":"TOK"`) {
 		t.Fatalf("sync token not included: %s", b2)
 	}

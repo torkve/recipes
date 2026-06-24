@@ -52,7 +52,7 @@
     <label>Папка заметок для синхронизации
       {{if .Folders}}
       <select name="folder">
-        {{range .Folders}}<option value="{{.ID}}"{{if eq (printf "%s" .ID) $.Folder}} selected{{end}}>{{.Name}}</option>{{end}}
+        {{range .Folders}}<option value="{{.ID}}"{{if eq .ID $.Folder}} selected{{end}}>{{repeat "— " .Depth}}{{.Name}}</option>{{end}}
       </select>
       {{else}}
       <input type="text" name="folder" value="{{.Folder}}" placeholder="Идентификатор папки">

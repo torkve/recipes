@@ -8,19 +8,26 @@ import (
 )
 
 // ChecklistsToIngredients maps each note checklist to one ingredient block.
-// Items are kept verbatim (free-text, no quantity parsing — per spec). Empty
-// checklists are dropped.
+// Items are kept verbatim (free-text, no quantity parsing — per spec). A leading
+// "# <text>" item is taken as the block subtitle (symmetric with
+// IngredientsToChecklists). Empty checklists are dropped.
 func ChecklistsToIngredients(checklists [][]string) []models.IngredientBlock {
 	var out []models.IngredientBlock
 	for _, c := range checklists {
-		var items []string
+		var block models.IngredientBlock
 		for _, it := range c {
-			if v := strings.TrimSpace(it); v != "" {
-				items = append(items, v)
+			v := strings.TrimSpace(it)
+			if v == "" {
+				continue
 			}
+			if sub, ok := strings.CutPrefix(v, "# "); ok && block.Subtitle == "" && len(block.Items) == 0 {
+				block.Subtitle = strings.TrimSpace(sub)
+				continue
+			}
+			block.Items = append(block.Items, v)
 		}
-		if len(items) > 0 {
-			out = append(out, models.IngredientBlock{Items: items})
+		if block.Subtitle != "" || len(block.Items) > 0 {
+			out = append(out, block)
 		}
 	}
 	return out

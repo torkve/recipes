@@ -48,14 +48,23 @@ func recordToFolder(r ckRecord) notesync.Folder {
 // TextDataEncrypted (gzip+protobuf, fetched via records/lookup) — handled
 // separately; here the snippet is used as the body. The folder is a reference.
 func recordToNote(r ckRecord) notesync.Note {
-	folder := r.referenceField("Folders", "Folder", "parent")
-	return notesync.Note{
+	n := notesync.Note{
 		ID:       notesync.NoteID(r.RecordName),
-		FolderID: notesync.FolderID(folder),
+		FolderID: notesync.FolderID(r.referenceField("Folders", "Folder", "parent")),
 		Etag:     notesync.Etag(r.RecordChangeTag),
 		Title:    r.decodedField("TitleEncrypted", "title"),
-		BodyHTML: r.decodedField("SnippetEncrypted", "Snippet"),
 	}
+	// Prefer the full body (checklist ingredients + steps) from the note blob;
+	// fall back to the plain-text snippet preview when it can't be parsed.
+	if td := r.decodedField("TextDataEncrypted"); td != "" {
+		if blocks, steps, ok := parseNoteBody([]byte(td)); ok {
+			n.Checklists = blocks
+			n.BodyHTML = steps
+			return n
+		}
+	}
+	n.BodyHTML = r.decodedField("SnippetEncrypted", "Snippet")
+	return n
 }
 
 // noteToRecord builds a CloudKit record for pushing a note. The body is written

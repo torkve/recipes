@@ -103,6 +103,45 @@ func login(t *testing.T, c *http.Client, base string) {
 	}
 }
 
+func TestCategoryTree(t *testing.T) {
+	parent := int64(1)
+	cats := []models.Category{
+		{ID: 1, Name: "Рецепты"},
+		{ID: 2, Name: "Супы", ParentID: &parent},
+		{ID: 3, Name: "Соусы", ParentID: &parent},
+		{ID: 4, Name: "Десерты"},
+	}
+	tree := categoryTree(cats)
+	want := []struct {
+		name  string
+		depth int
+	}{{"Рецепты", 0}, {"Супы", 1}, {"Соусы", 1}, {"Десерты", 0}}
+	if len(tree) != len(want) {
+		t.Fatalf("got %d nodes, want %d", len(tree), len(want))
+	}
+	for i, w := range want {
+		if tree[i].Name != w.name || tree[i].Depth != w.depth {
+			t.Fatalf("node %d = (%s,%d), want (%s,%d)", i, tree[i].Name, tree[i].Depth, w.name, w.depth)
+		}
+	}
+}
+
+func TestHomeRendersCategoryHierarchy(t *testing.T) {
+	ts, st := testServer(t)
+	ctx := context.Background()
+	parent, err := st.GetOrCreateCategory(ctx, "Десерты", models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateCategoryWithParent(ctx, "Торты", &parent.ID, models.SourceManual); err != nil {
+		t.Fatal(err)
+	}
+	home := getPage(t, newClient(t), ts.URL+"/")
+	if !strings.Contains(home, "— Торты") {
+		t.Error("child category not rendered indented in the nav")
+	}
+}
+
 // Scenario 1: logo + navigation present on every page, linking home.
 func TestScenarioLogoAndNav(t *testing.T) {
 	ts, _ := testServer(t)

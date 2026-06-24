@@ -16,7 +16,7 @@
       <label>Выберите существующую
         <select name="category_id" id="category-select">
           <option value="">— не выбрана —</option>
-          {{range .Categories}}<option value="{{.ID}}"{{if eq .ID $.SelectedCategoryID}} selected{{end}}>{{.Name}}</option>{{end}}
+          {{range .Categories}}<option value="{{.ID}}"{{if eq .ID $.SelectedCategoryID}} selected{{end}}>{{repeat "— " .Depth}}{{.Name}}</option>{{end}}
         </select>
       </label>
       <label>…или введите новую (Свой вариант)

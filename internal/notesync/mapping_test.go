@@ -13,14 +13,27 @@ func TestChecklistsToIngredientsRoundTrip(t *testing.T) {
 		{"3 яйца", "", "  100 г сахара  "},
 	}
 	ings := ChecklistsToIngredients(checklists)
-	// Subtitle marker "# Тесто" stays as an item on import (only the reverse
-	// mapping interprets it); empties are trimmed/dropped.
+	// A leading "# Тесто" item becomes the block subtitle; empties are dropped.
 	want := []models.IngredientBlock{
-		{Items: []string{"# Тесто", "200 г муки", "щепотка соли"}},
+		{Subtitle: "Тесто", Items: []string{"200 г муки", "щепотка соли"}},
 		{Items: []string{"3 яйца", "100 г сахара"}},
 	}
 	if !reflect.DeepEqual(ings, want) {
 		t.Fatalf("got %+v, want %+v", ings, want)
+	}
+}
+
+func TestChecklistsToIngredientsExtractsSubtitle(t *testing.T) {
+	got := ChecklistsToIngredients([][]string{
+		{"# Тесто", "200 г муки", "щепотка соли"},
+		{"3 яйца"},
+	})
+	want := []models.IngredientBlock{
+		{Subtitle: "Тесто", Items: []string{"200 г муки", "щепотка соли"}},
+		{Items: []string{"3 яйца"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
 

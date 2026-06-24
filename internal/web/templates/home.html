@@ -9,7 +9,7 @@
 
   <nav class="category-nav" id="category-nav" aria-label="Категории">
     <a class="chip{{if not .SelectedCat}} active{{end}}" href="/" data-cat="">Все</a>
-    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}" data-cat="{{.ID}}">{{.Name}}</a>{{end}}
+    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}" data-cat="{{.ID}}">{{repeat "— " .Depth}}{{.Name}}</a>{{end}}
   </nav>
 
   <div id="results">

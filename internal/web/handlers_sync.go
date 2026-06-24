@@ -29,6 +29,40 @@ var syncMessages = map[string]string{
 
 func (s *Server) syncEnabled() bool { return s.engine != nil }
 
+// folderOption is a folder rendered in the picker, depth-indented.
+type folderOption struct {
+	ID    string
+	Name  string
+	Depth int
+}
+
+// folderOptions orders folders parent-before-child and computes each one's depth
+// for hierarchical rendering in the picker.
+func folderOptions(folders []notesync.Folder) []folderOption {
+	byID := make(map[notesync.FolderID]notesync.Folder, len(folders))
+	for _, f := range folders {
+		byID[f.ID] = f
+	}
+	depthOf := func(f notesync.Folder) int {
+		d := 0
+		for cur := f.ParentID; cur != "" && d < 50; {
+			p, ok := byID[cur]
+			if !ok {
+				break
+			}
+			d++
+			cur = p.ParentID
+		}
+		return d
+	}
+	sorted := notesync.SortFoldersTopologically(folders)
+	out := make([]folderOption, 0, len(sorted))
+	for _, f := range sorted {
+		out = append(out, folderOption{ID: string(f.ID), Name: f.Name, Depth: depthOf(f)})
+	}
+	return out
+}
+
 func (s *Server) redirectSync(w http.ResponseWriter, r *http.Request, msg string) {
 	http.Redirect(w, r, "/admin/sync?msg="+msg, http.StatusSeeOther)
 }
@@ -59,7 +93,7 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		data["AppleID"] = acct.AppleID
 		data["Folder"] = acct.NotesFolder
 		if folders, ferr := s.engine.ListRemoteFolders(ctx, uid); ferr == nil {
-			data["Folders"] = folders
+			data["Folders"] = folderOptions(folders)
 		} else {
 			data["FolderError"] = ferr.Error()
 		}

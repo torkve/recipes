@@ -31,6 +31,7 @@ func templateFuncs() template.FuncMap {
 		"joinLines": func(items []string) string {
 			return strings.Join(items, "\n")
 		},
+		"repeat": strings.Repeat,
 	}
 }
 

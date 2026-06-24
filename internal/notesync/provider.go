@@ -73,12 +73,13 @@ type SyncProvider interface {
 	// transparently. Returns ErrReauthRequired when re-binding is needed.
 	Restore(ctx context.Context, blob []byte) (Session, error)
 
-	// ListFolders returns the folder subtree under root.
+	// ListFolders returns the folder subtree under root (cheap, folders only).
 	ListFolders(ctx context.Context, sess Session, root FolderID) ([]Folder, error)
 
-	// ChangedNotes returns notes changed since the given backend change token,
-	// plus the next token to persist.
-	ChangedNotes(ctx context.Context, sess Session, root FolderID, since string) (notes []Note, next string, err error)
+	// FetchZone enumerates the zone in a single pass, returning the folders under
+	// root and the in-scope notes changed since the given token, plus the next
+	// token to persist. since == "" performs a full enumeration.
+	FetchZone(ctx context.Context, sess Session, root FolderID, since string) (folders []Folder, notes []Note, next string, err error)
 
 	// PushNote creates (expectedEtag == "") or updates a note. A mismatch
 	// between expectedEtag and the live note must be reported as ErrEtagConflict

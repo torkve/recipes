@@ -35,8 +35,8 @@ func (p *fakeProvider) Restore(ctx context.Context, blob []byte) (Session, error
 func (p *fakeProvider) ListFolders(ctx context.Context, sess Session, root FolderID) ([]Folder, error) {
 	return p.folders, nil
 }
-func (p *fakeProvider) ChangedNotes(ctx context.Context, sess Session, root FolderID, since string) ([]Note, string, error) {
-	return p.notes, "", nil
+func (p *fakeProvider) FetchZone(ctx context.Context, sess Session, root FolderID, since string) ([]Folder, []Note, string, error) {
+	return p.folders, p.notes, "", nil
 }
 func (p *fakeProvider) PushNote(ctx context.Context, sess Session, n Note, expected Etag) (Note, error) {
 	p.pushCount++

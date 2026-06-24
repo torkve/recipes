@@ -74,14 +74,14 @@ func (p *Provider) refresh(ctx context.Context, s *Session) error {
 	return nil
 }
 
-// zoneChanges enumerates the Notes zone via changes/zone, paginating on
-// moreComing, and returns all records plus the final sync token.
-func (p *Provider) zoneChanges(ctx context.Context, s *Session, since string) ([]ckRecord, string, error) {
+// zoneChanges enumerates the Notes zone via changes/zone (scoped to the given
+// keys/record types), paginating on moreComing, returning all records + token.
+func (p *Provider) zoneChanges(ctx context.Context, s *Session, since string, desiredKeys, recordTypes []string) ([]ckRecord, string, error) {
 	const maxPages = 200
 	var all []ckRecord
 	token := since
 	for page := 0; page < maxPages; page++ {
-		body, err := zoneChangesBody(token)
+		body, err := zoneChangesBody(token, desiredKeys, recordTypes)
 		if err != nil {
 			return nil, "", err
 		}
@@ -105,13 +105,13 @@ func (p *Provider) zoneChanges(ctx context.Context, s *Session, since string) ([
 }
 
 // ListFolders returns folders under root (descendants only), with parents
-// relative to root.
+// relative to root. It uses a cheap folder-only zone scan (no note bodies).
 func (p *Provider) ListFolders(ctx context.Context, sess notesync.Session, root notesync.FolderID) ([]notesync.Folder, error) {
 	s, ok := sess.(*Session)
 	if !ok {
 		return nil, errBadSession
 	}
-	recs, _, err := p.zoneChanges(ctx, s, "")
+	recs, _, err := p.zoneChanges(ctx, s, "", folderDesiredKeys, folderDesiredRecordTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -124,21 +124,26 @@ func (p *Provider) ListFolders(ctx context.Context, sess notesync.Session, root 
 	return descendantsOf(all, root), nil
 }
 
-// ChangedNotes returns notes under root that changed since the given token,
-// along with the next token. since == "" performs a full enumeration.
-func (p *Provider) ChangedNotes(ctx context.Context, sess notesync.Session, root notesync.FolderID, since string) ([]notesync.Note, string, error) {
+// FetchZone enumerates the whole Notes zone in a single scan, returning both the
+// folders (under root) and the notes in scope, plus the next change token.
+func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root notesync.FolderID, since string) ([]notesync.Folder, []notesync.Note, string, error) {
 	s, ok := sess.(*Session)
 	if !ok {
-		return nil, "", errBadSession
+		return nil, nil, "", errBadSession
 	}
-	recs, next, err := p.zoneChanges(ctx, s, since)
+	recs, next, err := p.zoneChanges(ctx, s, since, notesDesiredKeys, notesDesiredRecordTypes)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	folders, err := p.ListFolders(ctx, s, root)
-	if err != nil {
-		return nil, "", err
+
+	var rawFolders []notesync.Folder
+	for _, r := range recs {
+		if r.RecordType == recordTypeFolder {
+			rawFolders = append(rawFolders, recordToFolder(r))
+		}
 	}
+	folders := descendantsOf(rawFolders, root)
+
 	inScope := map[notesync.FolderID]bool{root: true}
 	for _, f := range folders {
 		inScope[f.ID] = true
@@ -153,7 +158,7 @@ func (p *Provider) ChangedNotes(ctx context.Context, sess notesync.Session, root
 			notes = append(notes, n)
 		}
 	}
-	return notes, next, nil
+	return folders, notes, next, nil
 }
 
 // PushNote creates or updates a note, translating CloudKit conflicts.

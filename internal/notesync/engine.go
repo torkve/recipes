@@ -124,7 +124,9 @@ func (e *Engine) ListRemoteFolders(ctx context.Context, userID int64) ([]Folder,
 	if err != nil {
 		return nil, err
 	}
-	return e.provider.ListFolders(ctx, sess, FolderID(acct.NotesFolder))
+	// Pass an empty root so the picker shows the whole folder tree (including the
+	// already-chosen folder), regardless of any saved selection.
+	return e.provider.ListFolders(ctx, sess, "")
 }
 
 func (e *Engine) persistSession(ctx context.Context, userID int64, sess Session) error {
@@ -205,7 +207,7 @@ func (e *Engine) ResolveConflict(ctx context.Context, userID int64, conflictID i
 	case ResolveKeepRemote:
 		// Re-fetch the linked note and overwrite the recipe.
 		if rec.ICloudNoteID != nil {
-			notes, _, err := e.provider.ChangedNotes(ctx, sess, FolderID(acct.NotesFolder), "")
+			_, notes, _, err := e.provider.FetchZone(ctx, sess, FolderID(acct.NotesFolder), "")
 			if err != nil {
 				return err
 			}

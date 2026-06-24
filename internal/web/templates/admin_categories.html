@@ -13,6 +13,7 @@
       {{range .Categories}}
       <tr>
         <td>
+          {{if .Depth}}<span class="cat-indent">{{repeat "— " .Depth}}</span>{{end}}
           <form class="inline rename-form" method="post" action="/admin/categories/{{.ID}}/rename">
             {{$.CSRFField}}
             <input type="text" name="name" value="{{.Name}}" aria-label="Название категории" required>

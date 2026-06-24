@@ -90,17 +90,21 @@ func (r ckRecord) decodedField(names ...string) string {
 // records and fields we map. Folder is not indexable for records/query, so the
 // whole Notes zone is enumerated via changes/zone instead.
 var (
-	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate"}
+	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate"}
 	notesDesiredRecordTypes = []string{"Note", "Folder"}
+
+	// Folder-only scan for the picker / push (cheap — no note bodies).
+	folderDesiredKeys        = []string{"TitleEncrypted", "ParentFolder"}
+	folderDesiredRecordTypes = []string{"Folder"}
 )
 
-// zoneChangesBody builds a changes/zone request for the Notes zone. syncToken is
-// included only when resuming a previous scan (pure).
-func zoneChangesBody(syncToken string) ([]byte, error) {
+// zoneChangesBody builds a changes/zone request for the Notes zone scoped to the
+// given keys and record types. syncToken is included only when resuming (pure).
+func zoneChangesBody(syncToken string, desiredKeys, recordTypes []string) ([]byte, error) {
 	zone := map[string]any{
 		"zoneID":             map[string]string{"zoneName": notesZone},
-		"desiredKeys":        notesDesiredKeys,
-		"desiredRecordTypes": notesDesiredRecordTypes,
+		"desiredKeys":        desiredKeys,
+		"desiredRecordTypes": recordTypes,
 		"reverse":            true,
 	}
 	if syncToken != "" {

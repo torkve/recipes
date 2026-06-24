@@ -3,6 +3,7 @@ package icloud
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,10 @@ type stubTransport struct {
 	zoneCalls    int
 	modifyCalled bool
 	lastURL      string
+
+	lookupRecs  map[string]string // recordName -> canned record JSON
+	lookupCalls int
+	lookupErr   bool // when true, records/lookup returns HTTP 500
 }
 
 func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -57,6 +62,13 @@ func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			body = t.zonePages[i]
 			t.zoneIdx++
 		}
+	case strings.Contains(req.URL.Path, "records/lookup"):
+		t.lookupCalls++
+		if t.lookupErr {
+			return &http.Response{StatusCode: http.StatusInternalServerError,
+				Body: io.NopCloser(strings.NewReader(`{"error":"boom"}`)), Header: make(http.Header)}, nil
+		}
+		body = t.lookupResponse(req)
 	case strings.Contains(req.URL.Path, "records/modify"):
 		t.modifyCalled = true
 		body = `{"records":[{"recordName":"NEW","recordType":"Folder","fields":{}}]}`
@@ -66,6 +78,55 @@ func (t *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}, nil
+}
+
+// lookupResponse returns the canned records for the requested names, reporting a
+// serverErrorCode for any unknown name (to exercise tolerant parsing).
+func (t *stubTransport) lookupResponse(req *http.Request) string {
+	var reqBody struct {
+		Records []struct {
+			RecordName string `json:"recordName"`
+		} `json:"records"`
+	}
+	raw, _ := io.ReadAll(req.Body)
+	_ = json.Unmarshal(raw, &reqBody)
+	var parts []string
+	for _, r := range reqBody.Records {
+		if rec, ok := t.lookupRecs[r.RecordName]; ok {
+			parts = append(parts, rec)
+		} else {
+			parts = append(parts, fmt.Sprintf(`{"recordName":%q,"serverErrorCode":"NOT_FOUND"}`, r.RecordName))
+		}
+	}
+	return `{"records":[` + strings.Join(parts, ",") + `]}`
+}
+
+func attachmentRec(name, mediaName string) string {
+	return fmt.Sprintf(`{"recordName":%q,"recordType":"Attachment","fields":{`+
+		`"Media":{"value":{"recordName":%q},"type":"REFERENCE"}}}`, name, mediaName)
+}
+
+func mediaRec(name, url string) string {
+	return fmt.Sprintf(`{"recordName":%q,"recordType":"Media","fields":{`+
+		`"Asset":{"value":{"downloadURL":%q,"size":3},"type":"ASSETID"}}}`, name, url)
+}
+
+// notePageImage is a changes/zone page with one Note whose body has an inline
+// image attachment (att) in a step paragraph.
+func notePageImage(recordName, title, att string) string {
+	text := title + "\nШаг ￼ тут\n"
+	runs := []noteRun{
+		{length: len([]rune(title + "\n")), styleType: 0},
+		{length: len([]rune("Шаг ")), styleType: -1},
+		{length: 1, styleType: -1, attachID: att, attachUTI: "public.jpeg"},
+		{length: len([]rune(" тут\n")), styleType: -1},
+	}
+	blob := base64.StdEncoding.EncodeToString(buildNoteBlob(text, runs))
+	encTitle := base64.StdEncoding.EncodeToString([]byte(title))
+	return fmt.Sprintf(`{"zones":[{"records":[{"recordName":%q,"recordType":"Note","fields":{`+
+		`"TitleEncrypted":{"value":%q,"type":"ENCRYPTED_BYTES"},`+
+		`"TextDataEncrypted":{"value":%q,"type":"ENCRYPTED_BYTES"}}}],"syncToken":"t","moreComing":false}]}`,
+		recordName, encTitle, blob)
 }
 
 func emptyZonePage(more bool) string {
@@ -128,6 +189,76 @@ func TestListFoldersUsesChangesZoneWithParams(t *testing.T) {
 		if !strings.Contains(st.lastURL, want) {
 			t.Fatalf("CloudKit query missing %q: %s", want, st.lastURL)
 		}
+	}
+}
+
+func TestParseLookupSkipsErroredRecords(t *testing.T) {
+	body := `{"records":[` +
+		`{"recordName":"OK","recordType":"Media","fields":{}},` +
+		`{"recordName":"GONE","serverErrorCode":"NOT_FOUND"}]}`
+	recs, err := parseLookup([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].RecordName != "OK" {
+		t.Fatalf("expected only the OK record, got %+v", recs)
+	}
+}
+
+func TestResolveAttachmentURLs(t *testing.T) {
+	st := &stubTransport{lookupRecs: map[string]string{
+		"ATT1": attachmentRec("ATT1", "MED1"),
+		"MED1": mediaRec("MED1", "https://cvws.example/img1"),
+	}}
+	p := New(&http.Client{Transport: st}, 1)
+
+	got := p.resolveAttachmentURLs(context.Background(), testSession(), []string{"ATT1", "MISSING"})
+	if got["ATT1"] != "https://cvws.example/img1" {
+		t.Fatalf("ATT1 url = %q, want the media asset url", got["ATT1"])
+	}
+	if _, ok := got["MISSING"]; ok {
+		t.Fatal("unresolved attachment should be absent from the map")
+	}
+	if st.lookupCalls != 2 {
+		t.Fatalf("expected 2 lookup rounds (attachments, media), got %d", st.lookupCalls)
+	}
+}
+
+func TestFetchZoneResolvesInlineImage(t *testing.T) {
+	st := &stubTransport{
+		zonePages:  []string{notePageImage("N1", "Пирог", "ATT1")},
+		lookupRecs: map[string]string{"ATT1": attachmentRec("ATT1", "MED1"), "MED1": mediaRec("MED1", "https://cvws.example/img1")},
+	}
+	p := New(&http.Client{Transport: st}, 1)
+
+	_, notes, _, err := p.FetchZone(context.Background(), testSession(), "ROOT", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 || len(notes[0].Images) != 1 {
+		t.Fatalf("expected one note with one image, got %+v", notes)
+	}
+	if got := notes[0].Images[0]; got.ID != "ATT1" || got.Ref != "https://cvws.example/img1" {
+		t.Fatalf("image not resolved: %+v", got)
+	}
+}
+
+func TestFetchZoneToleratesImageLookupFailure(t *testing.T) {
+	st := &stubTransport{
+		zonePages: []string{notePageImage("N1", "Пирог", "ATT1")},
+		lookupErr: true, // every records/lookup fails
+	}
+	p := New(&http.Client{Transport: st}, 1)
+
+	_, notes, _, err := p.FetchZone(context.Background(), testSession(), "ROOT", "")
+	if err != nil {
+		t.Fatalf("a failed image lookup must not abort the pull: %v", err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected the note to still import, got %d notes", len(notes))
+	}
+	if len(notes[0].Images) != 0 {
+		t.Fatalf("unresolved image should be dropped, got %+v", notes[0].Images)
 	}
 }
 

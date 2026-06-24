@@ -11,10 +11,8 @@ import (
 // the mapping below is intentionally tolerant (it tries several candidates and
 // degrades gracefully) so it is easy to correct against live data.
 const (
-	recordTypeNote       = "Note"
-	recordTypeFolder     = "Folder"
-	recordTypeAttachment = "Attachment"
-	recordTypeMedia      = "Media"
+	recordTypeNote   = "Note"
+	recordTypeFolder = "Folder"
 )
 
 // referenceField decodes a CloudKit reference field to the referenced record

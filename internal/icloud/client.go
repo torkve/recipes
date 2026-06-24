@@ -144,47 +144,104 @@ func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root no
 	}
 	folders := descendantsOf(rawFolders, root)
 
-	attURL := imageURLsByAttachment(recs)
-
 	inScope := map[notesync.FolderID]bool{root: true}
 	for _, f := range folders {
 		inScope[f.ID] = true
 	}
 	var notes []notesync.Note
+	var attIDs []string
 	for _, r := range recs {
 		if r.RecordType != recordTypeNote || r.intField("Deleted") == 1 {
 			continue
 		}
 		n := recordToNote(r)
 		if inScope[n.FolderID] || n.FolderID == "" {
-			n.Images = resolveImageRefs(n.Images, attURL)
 			notes = append(notes, n)
+			for _, img := range n.Images {
+				attIDs = append(attIDs, img.ID)
+			}
 		}
+	}
+
+	// Attachment/Media records are not enumerated by changes/zone; resolve their
+	// download URLs via records/lookup and stamp each image's Ref.
+	attURL := p.resolveAttachmentURLs(ctx, s, attIDs)
+	for i := range notes {
+		notes[i].Images = resolveImageRefs(notes[i].Images, attURL)
 	}
 	return folders, notes, next, nil
 }
 
-// imageURLsByAttachment maps each image Attachment record name to its download
-// URL by following Attachment.Media -> Media.Asset.downloadURL.
-func imageURLsByAttachment(recs []ckRecord) map[string]string {
-	mediaURL := map[string]string{}
-	for _, r := range recs {
-		if r.RecordType == recordTypeMedia {
-			if url, _ := r.assetField("Asset"); url != "" {
-				mediaURL[r.RecordName] = url
-			}
+// resolveAttachmentURLs maps each image Attachment record name to its full-image
+// download URL by following Attachment.Media -> Media.Asset.downloadURL via two
+// batched records/lookup rounds. Image resolution is best-effort: lookup errors
+// are logged and the affected images are simply dropped (their @@IMG markers are
+// stripped on import), never aborting the pull.
+func (p *Provider) resolveAttachmentURLs(ctx context.Context, s *Session, attIDs []string) map[string]string {
+	attURL := map[string]string{}
+	if len(attIDs) == 0 {
+		return attURL
+	}
+	atts, err := p.lookupRecords(ctx, s, attIDs)
+	if err != nil {
+		log.Printf("icloud: attachment lookup failed, skipping %d image(s): %v", len(attIDs), err)
+		return attURL
+	}
+	mediaOf := map[string]string{} // attachment recordName -> media recordName
+	var mediaIDs []string
+	for _, a := range atts {
+		if m := a.referenceField("Media"); m != "" {
+			mediaOf[a.RecordName] = m
+			mediaIDs = append(mediaIDs, m)
 		}
 	}
-	attURL := map[string]string{}
-	for _, r := range recs {
-		if r.RecordType != recordTypeAttachment {
-			continue
+	if len(mediaIDs) == 0 {
+		return attURL
+	}
+	medias, err := p.lookupRecords(ctx, s, mediaIDs)
+	if err != nil {
+		log.Printf("icloud: media lookup failed, skipping %d image(s): %v", len(mediaIDs), err)
+		return attURL
+	}
+	mediaURL := map[string]string{}
+	for _, m := range medias {
+		if url, _ := m.assetField("Asset"); url != "" {
+			mediaURL[m.RecordName] = url
 		}
-		if url, ok := mediaURL[r.referenceField("Media")]; ok {
-			attURL[r.RecordName] = url
+	}
+	for att, media := range mediaOf {
+		if url, ok := mediaURL[media]; ok {
+			attURL[att] = url
 		}
 	}
 	return attURL
+}
+
+// lookupRecords fetches records by name via records/lookup, chunked to stay under
+// CloudKit's per-request batch limit, tolerating per-record errors.
+func (p *Provider) lookupRecords(ctx context.Context, s *Session, names []string) ([]ckRecord, error) {
+	const chunk = 50
+	var out []ckRecord
+	for i := 0; i < len(names); i += chunk {
+		end := i + chunk
+		if end > len(names) {
+			end = len(names)
+		}
+		body, err := lookupBody(names[i:end])
+		if err != nil {
+			return nil, err
+		}
+		respBody, err := p.ckPost(ctx, s, "records/lookup", body)
+		if err != nil {
+			return nil, err
+		}
+		recs, err := parseLookup(respBody)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, recs...)
+	}
+	return out, nil
 }
 
 // resolveImageRefs stamps each image's download URL from the attachment map,

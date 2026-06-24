@@ -110,8 +110,11 @@ func (r ckRecord) decodedField(names ...string) string {
 // records and fields we map. Folder is not indexable for records/query, so the
 // whole Notes zone is enumerated via changes/zone instead.
 var (
-	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate", "Media", "Asset"}
-	notesDesiredRecordTypes = []string{"Note", "Folder", "Attachment", "Media"}
+	// changes/zone does not enumerate Attachment/Media records (the Notes web app
+	// fetches those via records/lookup), so they are resolved separately — see
+	// resolveAttachmentURLs.
+	notesDesiredKeys        = []string{"TitleEncrypted", "SnippetEncrypted", "TextDataEncrypted", "Folders", "Folder", "ParentFolder", "Deleted", "ModificationDate"}
+	notesDesiredRecordTypes = []string{"Note", "Folder"}
 
 	// Folder-only scan for the picker / push (cheap — no note bodies).
 	folderDesiredKeys        = []string{"TitleEncrypted", "ParentFolder"}
@@ -179,6 +182,37 @@ func parseRecords(body []byte) ([]ckRecord, error) {
 				return nil, errEtagConflict
 			}
 			return nil, fmt.Errorf("icloud: record error %s: %s", rec.ServerErrorCode, rec.Reason)
+		}
+		out = append(out, rec.ckRecord)
+	}
+	return out, nil
+}
+
+// lookupBody builds a records/lookup request for the given record names in the
+// Notes zone (pure).
+func lookupBody(names []string) ([]byte, error) {
+	recs := make([]map[string]string, 0, len(names))
+	for _, n := range names {
+		recs = append(recs, map[string]string{"recordName": n})
+	}
+	return json.Marshal(map[string]any{
+		"records": recs,
+		"zoneID":  map[string]string{"zoneName": notesZone},
+	})
+}
+
+// parseLookup extracts records from a records/lookup response, tolerantly
+// skipping records the server could not return (e.g. a deleted attachment
+// reports a serverErrorCode). Unlike parseRecords it never fails the batch.
+func parseLookup(body []byte) ([]ckRecord, error) {
+	var r queryResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("icloud: parse lookup: %w", err)
+	}
+	out := make([]ckRecord, 0, len(r.Records))
+	for _, rec := range r.Records {
+		if rec.ServerErrorCode != "" {
+			continue
 		}
 		out = append(out, rec.ckRecord)
 	}

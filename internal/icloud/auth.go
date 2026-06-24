@@ -123,63 +123,74 @@ func (p *Provider) Begin(ctx context.Context, appleID, password string) (notesyn
 		return notesync.BindResult{}, fmt.Errorf("icloud: federate status %d: %s", resp.StatusCode, truncate(fedBody))
 	}
 
-	// SRP init: send A, receive salt/B/iteration/protocol.
-	client, err := newSRPClient()
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-	initReq, err := buildSigninInitBody(appleID, client.aWire())
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-	initBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/init", st, initReq)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-	if resp.StatusCode >= 400 {
-		return notesync.BindResult{}, fmt.Errorf("icloud: signin/init status %d: %s", resp.StatusCode, truncate(initBody))
-	}
-	salt, B, iter, protocol, cVal, err := parseSigninInit(initBody)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-
-	// SRP proof from the password.
-	x, err := derivePasswordKey(password, salt, iter, protocol)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-	m1, m2, err := client.proof(appleID, x, salt, B)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-
-	// SRP complete.
-	compReq, err := buildSigninCompleteBody(appleID, cVal, m1, m2)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-	compBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/complete?isRememberMeEnabled=true", st, compReq)
-	if err != nil {
-		return notesync.BindResult{}, err
-	}
-
-	switch resp.StatusCode {
-	case http.StatusConflict, http.StatusPreconditionFailed:
-		// HSA2 two-factor required; carry the auth session into Complete.
-		raw, _ := json.Marshal(st)
-		return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
-	case http.StatusOK, http.StatusNoContent, http.StatusFound:
-		// Signed in without 2FA (uncommon).
-		sess, err := p.finishLoginTokens(ctx, st.SessionToken, st.TrustToken, st.Country, st.Cookies)
+	// SRP: Apple accepts exactly one byte convention; the correct one can't be
+	// confirmed offline, so try the candidates in order (each a fresh
+	// init+complete) until signin/complete is no longer a 401.
+	var lastBody []byte
+	for i, opts := range srpVariants {
+		client, err := newSRPClient()
 		if err != nil {
 			return notesync.BindResult{}, err
 		}
-		sess.AppleID = appleID
-		return notesync.BindResult{Session: sess}, nil
-	default:
-		return notesync.BindResult{}, fmt.Errorf("icloud: signin/complete status %d: %s", resp.StatusCode, truncate(compBody))
+		initReq, err := buildSigninInitBody(appleID, client.aWire())
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+		initBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/init", st, initReq)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+		if resp.StatusCode >= 400 {
+			return notesync.BindResult{}, fmt.Errorf("icloud: signin/init status %d: %s", resp.StatusCode, truncate(initBody))
+		}
+		salt, B, iter, protocol, cVal, err := parseSigninInit(initBody)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+
+		dk, err := derivePasswordKey(password, salt, iter, protocol)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+		m1, m2, err := client.proof(appleID, dk, salt, B, opts)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+
+		compReq, err := buildSigninCompleteBody(appleID, cVal, m1, m2)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+		compBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/complete?isRememberMeEnabled=true", st, compReq)
+		if err != nil {
+			return notesync.BindResult{}, err
+		}
+
+		switch resp.StatusCode {
+		case http.StatusConflict, http.StatusPreconditionFailed:
+			// HSA2 two-factor required; carry the auth session into Complete.
+			log.Printf("icloud: SRP variant %d accepted (2FA required)", i)
+			raw, _ := json.Marshal(st)
+			return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
+		case http.StatusOK, http.StatusNoContent, http.StatusFound:
+			// Signed in without 2FA (uncommon).
+			log.Printf("icloud: SRP variant %d accepted", i)
+			sess, err := p.finishLoginTokens(ctx, st.SessionToken, st.TrustToken, st.Country, st.Cookies)
+			if err != nil {
+				return notesync.BindResult{}, err
+			}
+			sess.AppleID = appleID
+			return notesync.BindResult{Session: sess}, nil
+		case http.StatusUnauthorized:
+			// Wrong SRP convention (bad proof); try the next candidate.
+			log.Printf("icloud: SRP variant %d rejected (401), trying next", i)
+			lastBody = compBody
+			continue
+		default:
+			return notesync.BindResult{}, fmt.Errorf("icloud: signin/complete status %d: %s", resp.StatusCode, truncate(compBody))
+		}
 	}
+	return notesync.BindResult{}, fmt.Errorf("icloud: all SRP conventions rejected by signin/complete (last: %s)", truncate(lastBody))
 }
 
 // Complete submits the 2FA code, trusts the session, and finishes login.

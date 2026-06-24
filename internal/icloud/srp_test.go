@@ -16,61 +16,67 @@ func TestSRPGroupIs2048Bit(t *testing.T) {
 	}
 }
 
-// TestSRPSelfConsistency simulates an SRP server (knowing v = g^x) and checks
-// the client and server derive the same session key, so M1 verifies and the
-// client's expected M2 matches the server's H_AMK. This locks the SRP math
-// internally (it does not prove byte-equivalence with Apple's server).
-func TestSRPSelfConsistency(t *testing.T) {
-	appleID := "user@example.com"
-	password := "correct horse battery staple"
+// TestSRPVariantsSelfConsistency simulates an SRP server for every candidate
+// convention (using the same deriveX + padding) and checks the client and server
+// derive the same session key, so M1 verifies and the client's expected M2
+// matches the server's H_AMK. This locks each variant's math internally — a live
+// failure then means "Apple wants a different variant", never "broken variant".
+func TestSRPVariantsSelfConsistency(t *testing.T) {
+	const appleID = "user@example.com"
+	const password = "correct horse battery staple"
 	salt := []byte("0123456789abcdef")
 	const iter = 20081
 
-	x, err := derivePasswordKey(password, salt, iter, "s2k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	xInt := new(big.Int).SetBytes(x)
-	v := new(big.Int).Exp(srpG, xInt, srpN) // server verifier
-
-	c, err := newSRPClient()
+	dk, err := derivePasswordKey(password, salt, iter, "s2k")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Server: B = (k*v + g^b) mod N
-	k := new(big.Int).SetBytes(srpHash(pad(srpN.Bytes()), pad(srpG.Bytes())))
-	bBuf := make([]byte, 32)
-	if _, err := rand.Read(bBuf); err != nil {
-		t.Fatal(err)
-	}
-	b := new(big.Int).SetBytes(bBuf)
-	B := new(big.Int).Add(new(big.Int).Mul(k, v), new(big.Int).Exp(srpG, b, srpN))
-	B.Mod(B, srpN)
+	for i, opts := range srpVariants {
+		xInt := new(big.Int).SetBytes(deriveX(dk, salt, opts))
+		v := new(big.Int).Exp(srpG, xInt, srpN) // server verifier
 
-	m1, m2, err := c.proof(appleID, x, salt, pad(B.Bytes()))
-	if err != nil {
-		t.Fatal(err)
-	}
+		c, err := newSRPClient()
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	// Server-side session key: S = (A * v^u)^b mod N
-	u := new(big.Int).SetBytes(srpHash(pad(c.A.Bytes()), pad(B.Bytes())))
-	serverS := new(big.Int).Exp(new(big.Int).Mul(c.A, new(big.Int).Exp(v, u, srpN)), b, srpN)
-	serverK := srpHash(pad(serverS.Bytes()))
+		// Server: B = (k*v + g^b) mod N
+		k := new(big.Int).SetBytes(srpHash(pad(srpN.Bytes()), pad(srpG.Bytes())))
+		bBuf := make([]byte, 32)
+		if _, err := rand.Read(bBuf); err != nil {
+			t.Fatal(err)
+		}
+		b := new(big.Int).SetBytes(bBuf)
+		B := new(big.Int).Add(new(big.Int).Mul(k, v), new(big.Int).Exp(srpG, b, srpN))
+		B.Mod(B, srpN)
 
-	hN := srpHash(srpN.Bytes())
-	hG := srpHash(srpG.Bytes())
-	hXor := make([]byte, len(hN))
-	for i := range hN {
-		hXor[i] = hN[i] ^ hG[i]
-	}
-	expM1 := srpHash(hXor, srpHash([]byte(appleID)), salt, c.A.Bytes(), B.Bytes(), serverK)
-	if !bytes.Equal(m1, expM1) {
-		t.Fatal("client M1 does not match server-recomputed M1 (session keys diverged)")
-	}
-	expM2 := srpHash(c.A.Bytes(), m1, serverK)
-	if !bytes.Equal(m2, expM2) {
-		t.Fatal("client expected-M2 does not match server H_AMK")
+		m1, m2, err := c.proof(appleID, dk, salt, pad(B.Bytes()), opts)
+		if err != nil {
+			t.Fatalf("variant %d: %v", i, err)
+		}
+
+		// Server session key: S = (A * v^u)^b mod N
+		u := new(big.Int).SetBytes(srpHash(pad(c.A.Bytes()), pad(B.Bytes())))
+		serverS := new(big.Int).Exp(new(big.Int).Mul(c.A, new(big.Int).Exp(v, u, srpN)), b, srpN)
+		serverK := srpHash(pad(serverS.Bytes()))
+
+		aEnc, bEnc, gEnc, nEnc := c.A.Bytes(), B.Bytes(), srpG.Bytes(), srpN.Bytes()
+		if opts.padM1 {
+			aEnc, bEnc, gEnc, nEnc = pad(aEnc), pad(bEnc), pad(gEnc), pad(nEnc)
+		}
+		hN, hG := srpHash(nEnc), srpHash(gEnc)
+		hXor := make([]byte, len(hN))
+		for j := range hN {
+			hXor[j] = hN[j] ^ hG[j]
+		}
+		expM1 := srpHash(hXor, srpHash([]byte(appleID)), salt, aEnc, bEnc, serverK)
+		if !bytes.Equal(m1, expM1) {
+			t.Fatalf("variant %d: client M1 != server M1 (session keys diverged)", i)
+		}
+		if !bytes.Equal(m2, srpHash(aEnc, m1, serverK)) {
+			t.Fatalf("variant %d: client M2 != server H_AMK", i)
+		}
 	}
 }
 

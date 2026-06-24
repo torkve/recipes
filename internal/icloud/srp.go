@@ -77,6 +77,44 @@ func derivePasswordKey(password string, salt []byte, iter int, protocol string) 
 	return pbkdf2.Key(sha256.New, string(pwHash), salt, iter, 32)
 }
 
+// xMode selects how the SRP password key x is derived from the PBKDF2 output dk.
+type xMode int
+
+const (
+	xDirect        xMode = iota // x = dk
+	xHashSalt                   // x = H(salt | H(dk))            (no-username gen_x)
+	xHashSaltColon              // x = H(salt | H(":" | dk))      (colon-prefixed variant)
+)
+
+// srpOptions selects an SRP byte convention. Apple's server accepts exactly one;
+// since it can't be confirmed offline, Begin tries srpVariants in order.
+type srpOptions struct {
+	xMode xMode
+	padM1 bool // rfc5054: pad A/B/g to len(N) inside the M1/M2 hashes
+}
+
+// srpVariants are the candidate conventions, most-likely first. pyicloud uses
+// rfc5054_enable (padded) + no_username_in_x (x = H(salt|H(dk))).
+var srpVariants = []srpOptions{
+	{xHashSalt, true},
+	{xHashSaltColon, true},
+	{xDirect, true},
+	{xHashSalt, false},
+	{xDirect, false},
+}
+
+// deriveX wraps the PBKDF2 output dk into the SRP x value per opts.
+func deriveX(dk, salt []byte, opts srpOptions) []byte {
+	switch opts.xMode {
+	case xHashSalt:
+		return srpHash(salt, srpHash(dk))
+	case xHashSaltColon:
+		return srpHash(salt, srpHash(append([]byte{':'}, dk...)))
+	default:
+		return dk
+	}
+}
+
 type srpClient struct {
 	a *big.Int
 	A *big.Int
@@ -98,14 +136,15 @@ func newSRPClient() (*srpClient, error) {
 func (c *srpClient) aWire() []byte { return pad(c.A.Bytes()) }
 
 // proof computes the client proof M1 and the expected server proof M2 (H_AMK),
-// given the user's password key x (from derivePasswordKey), the salt, and the
-// server public value B.
-func (c *srpClient) proof(appleID string, x, salt, B []byte) (m1, m2 []byte, err error) {
+// given the PBKDF2 password key dk, the salt, the server public value B, and the
+// SRP convention opts. k/u/K are always padded (rfc5054); opts controls the x
+// derivation and whether A/B/g are padded inside M1/M2.
+func (c *srpClient) proof(appleID string, dk, salt, B []byte, opts srpOptions) (m1, m2 []byte, err error) {
 	bInt := new(big.Int).SetBytes(B)
 	if new(big.Int).Mod(bInt, srpN).Sign() == 0 {
 		return nil, nil, fmt.Errorf("icloud: SRP server value B is zero")
 	}
-	xInt := new(big.Int).SetBytes(x)
+	xInt := new(big.Int).SetBytes(deriveX(dk, salt, opts))
 
 	// k = H(PAD(N) | PAD(g))
 	k := new(big.Int).SetBytes(srpHash(pad(srpN.Bytes()), pad(srpG.Bytes())))
@@ -124,16 +163,22 @@ func (c *srpClient) proof(appleID string, x, salt, B []byte) (m1, m2 []byte, err
 
 	K := srpHash(pad(S.Bytes()))
 
-	// M1 = H( H(N) XOR H(g) | H(I) | salt | A | B | K )  (A,B minimal big-endian)
-	hN := srpHash(srpN.Bytes())
-	hG := srpHash(srpG.Bytes())
+	// M1 = H( H(N) XOR H(g) | H(I) | salt | A | B | K ).
+	aEnc, bEnc := c.A.Bytes(), bInt.Bytes()
+	gEnc := srpG.Bytes()
+	nEnc := srpN.Bytes()
+	if opts.padM1 {
+		aEnc, bEnc, gEnc, nEnc = pad(aEnc), pad(bEnc), pad(gEnc), pad(nEnc)
+	}
+	hN := srpHash(nEnc)
+	hG := srpHash(gEnc)
 	hXor := make([]byte, len(hN))
 	for i := range hN {
 		hXor[i] = hN[i] ^ hG[i]
 	}
 	hI := srpHash([]byte(appleID))
-	m1 = srpHash(hXor, hI, salt, c.A.Bytes(), bInt.Bytes(), K)
+	m1 = srpHash(hXor, hI, salt, aEnc, bEnc, K)
 	// M2 (H_AMK) = H( A | M1 | K )
-	m2 = srpHash(c.A.Bytes(), m1, K)
+	m2 = srpHash(aEnc, m1, K)
 	return m1, m2, nil
 }

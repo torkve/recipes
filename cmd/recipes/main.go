@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"recipes/internal/config"
+	"recipes/internal/store"
 )
 
 func main() {
@@ -31,6 +32,20 @@ func run() error {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
+	}
+
+	// Open and migrate the database.
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), 30*time.Second)
+	err = st.Migrate(migrateCtx)
+	cancelMigrate()
+	if err != nil {
+		return err
 	}
 
 	mux := http.NewServeMux()

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
   <title>{{if .Title}}{{.Title}} — {{end}}{{.SiteName}}</title>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -25,5 +26,7 @@
     {{block "content" .}}{{end}}
   </main>
   <footer class="site-footer"><small>{{.SiteName}}</small></footer>
+  <script src="/static/js/app.js" defer></script>
+  {{block "scripts" .}}{{end}}
 </body>
 </html>{{end}}

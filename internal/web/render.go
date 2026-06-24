@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/csrf"
@@ -12,6 +13,11 @@ import (
 
 // csrfFieldName is the form field gorilla/csrf expects the token in.
 const csrfFieldName = "csrf_token"
+
+// logError logs an internal error behind a 500 response.
+func logError(err error) {
+	log.Printf("web: %v", err)
+}
 
 // templateFuncs are helpers available inside all templates.
 func templateFuncs() template.FuncMap {
@@ -21,6 +27,9 @@ func templateFuncs() template.FuncMap {
 				return ""
 			}
 			return t.Local().Format("02.01.2006")
+		},
+		"joinLines": func(items []string) string {
+			return strings.Join(items, "\n")
 		},
 	}
 }
@@ -34,6 +43,7 @@ func (s *Server) newPageData(r *http.Request) pageData {
 		"SiteName":  s.cfg.SiteName,
 		"User":      currentUser(r),
 		"CSRFField": csrf.TemplateField(r),
+		"CSRFToken": csrf.Token(r),
 		"Path":      r.URL.Path,
 	}
 }

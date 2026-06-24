@@ -21,6 +21,14 @@ func (s *Store) AddImage(ctx context.Context, recipeID int64, filename, contentT
 	return &models.RecipeImage{ID: id, RecipeID: recipeID, Filename: filename, ContentType: contentType}, nil
 }
 
+// DeleteImageByName removes the image row for a recipe by filename. It is a
+// no-op (nil) if no such row exists.
+func (s *Store) DeleteImageByName(ctx context.Context, recipeID int64, filename string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM recipe_images WHERE recipe_id = ? AND filename = ?`, recipeID, filename)
+	return err
+}
+
 // ImagesForRecipe returns the images attached to a recipe, oldest first.
 func (s *Store) ImagesForRecipe(ctx context.Context, recipeID int64) ([]models.RecipeImage, error) {
 	rows, err := s.db.QueryContext(ctx,

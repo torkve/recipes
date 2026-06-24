@@ -89,6 +89,18 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /admin/logout", s.requireAuth(s.handleLogout))
 
+	// Admin: recipe management (all behind auth).
+	mux.HandleFunc("GET /admin", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/recipes", http.StatusSeeOther)
+	}))
+	mux.HandleFunc("GET /admin/recipes", s.requireAuth(s.handleAdminRecipes))
+	mux.HandleFunc("GET /admin/recipes/new", s.requireAuth(s.handleRecipeNew))
+	mux.HandleFunc("POST /admin/recipes", s.requireAuth(s.handleRecipeCreate))
+	mux.HandleFunc("POST /admin/recipes/upload", s.requireAuth(s.handleUpload))
+	mux.HandleFunc("GET /admin/recipes/{id}/edit", s.requireAuth(s.handleRecipeEditForm))
+	mux.HandleFunc("POST /admin/recipes/{id}", s.requireAuth(s.handleRecipeUpdate))
+	mux.HandleFunc("POST /admin/recipes/{id}/delete", s.requireAuth(s.handleRecipeDelete))
+
 	// Embedded static assets.
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))

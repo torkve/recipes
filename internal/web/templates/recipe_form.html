@@ -1,0 +1,76 @@
+{{define "content"}}
+<section class="recipe-form">
+  <p><a href="/admin/recipes">← К списку рецептов</a></p>
+  <h1>{{if .IsEdit}}Редактирование рецепта{{else}}Новый рецепт{{end}}</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+
+  <form class="form form-wide" method="post" action="{{.FormAction}}" id="recipe-form">
+    {{.CSRFField}}
+
+    <label>Название блюда
+      <input type="text" name="title" value="{{.RecipeTitle}}" required autofocus>
+    </label>
+
+    <fieldset class="category-field">
+      <legend>Категория</legend>
+      <label>Выберите существующую
+        <select name="category_id" id="category-select">
+          <option value="">— не выбрана —</option>
+          {{range .Categories}}<option value="{{.ID}}"{{if eq .ID $.SelectedCategoryID}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+      </label>
+      <label>…или введите новую (Свой вариант)
+        <input type="text" name="new_category" value="{{.NewCategory}}" placeholder="Например: Десерты">
+      </label>
+    </fieldset>
+
+    <fieldset class="ingredients-field">
+      <legend>Ингредиенты</legend>
+      <div id="ingredient-blocks">
+        {{range .Ingredients}}
+        <div class="ing-block">
+          <input type="text" name="ing_subtitle" value="{{.Subtitle}}" placeholder="Подзаголовок (необязательно), например «Тесто»">
+          <textarea name="ing_items" rows="4" placeholder="Один ингредиент на строку, например «200 г муки»">{{joinLines .Items}}</textarea>
+          <button type="button" class="btn-link remove-block">Удалить блок</button>
+        </div>
+        {{end}}
+      </div>
+      <button type="button" class="btn btn-secondary" id="add-block">+ Добавить блок ингредиентов</button>
+    </fieldset>
+
+    <fieldset class="steps-field">
+      <legend>Шаги приготовления</legend>
+      <p class="hint">Можно вставлять изображения из буфера обмена (Ctrl/Cmd+V).</p>
+      <div class="steps-editor" id="steps-editor" contenteditable="true">{{.StepsHTMLSafe}}</div>
+      <input type="hidden" name="steps_html" id="steps-html">
+    </fieldset>
+
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" id="preview-btn">Предпросмотр</button>
+      <button type="submit" class="btn">Сохранить</button>
+    </div>
+  </form>
+
+  <section class="preview" id="preview" hidden>
+    <h2>Предпросмотр</h2>
+    <article class="recipe-view" id="preview-body"></article>
+  </section>
+
+  {{if .IsEdit}}
+  <form class="delete-form" method="post" action="/admin/recipes/{{.RecipeID}}/delete" onsubmit="return confirm('Удалить рецепт безвозвратно?');">
+    {{.CSRFField}}
+    <button type="submit" class="btn btn-danger">Удалить рецепт</button>
+  </form>
+  {{end}}
+
+  <template id="ing-block-template">
+    <div class="ing-block">
+      <input type="text" name="ing_subtitle" placeholder="Подзаголовок (необязательно), например «Начинка»">
+      <textarea name="ing_items" rows="4" placeholder="Один ингредиент на строку"></textarea>
+      <button type="button" class="btn-link remove-block">Удалить блок</button>
+    </div>
+  </template>
+</section>
+{{end}}
+
+{{define "scripts"}}<script src="/static/js/editor.js" defer></script>{{end}}

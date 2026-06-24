@@ -1,0 +1,32 @@
+{{define "content"}}
+<section>
+  <div class="list-head">
+    <h1>Управление рецептами</h1>
+    <a class="btn" href="/admin/recipes/new">+ Новый рецепт</a>
+  </div>
+
+  {{if .Recipes}}
+  <table class="admin-table">
+    <thead><tr><th>Название</th><th>Категория</th><th>Создан</th><th></th></tr></thead>
+    <tbody>
+      {{range .Recipes}}
+      <tr>
+        <td><a href="/recipes/{{.ID}}">{{.Title}}</a></td>
+        <td>{{if .Category}}{{.Category.Name}}{{end}}</td>
+        <td>{{fmtDate .CreatedAt}}</td>
+        <td class="row-actions">
+          <a href="/admin/recipes/{{.ID}}/edit">Изменить</a>
+          <form class="inline" method="post" action="/admin/recipes/{{.ID}}/delete" onsubmit="return confirm('Удалить рецепт?');">
+            {{$.CSRFField}}
+            <button type="submit" class="btn-link btn-danger-link">Удалить</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p>Пока нет ни одного рецепта. <a href="/admin/recipes/new">Добавьте первый.</a></p>
+  {{end}}
+</section>
+{{end}}

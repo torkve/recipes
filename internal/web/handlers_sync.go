@@ -16,6 +16,7 @@ var syncMessages = map[string]string{
 	"pushed":    "Изменения отправлены в iCloud",
 	"resolved":  "Конфликт разрешён",
 	"unbound":   "Аккаунт отвязан",
+	"cancelled": "Вход отменён, можно начать заново",
 	"creds":     "Укажите Apple ID и пароль",
 	"binderr":   "Не удалось войти в iCloud",
 	"2faerr":    "Неверный код подтверждения",
@@ -48,20 +49,19 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		data["Message"] = m
 	}
 
+	// Treat an account as bound only once it has a session. A row created during
+	// BeginBind but never completed (no session_blob) is "not bound" so the page
+	// shows the bind form rather than a half-bound state.
 	acct, err := s.store.GetICloudAccount(ctx, uid)
-	bound := err == nil
+	bound := err == nil && len(acct.SessionBlob) > 0
 	data["Bound"] = bound
 	if bound {
 		data["AppleID"] = acct.AppleID
 		data["Folder"] = acct.NotesFolder
-		data["HasSession"] = len(acct.SessionBlob) > 0
-
-		if len(acct.SessionBlob) > 0 {
-			if folders, ferr := s.engine.ListRemoteFolders(ctx, uid); ferr == nil {
-				data["Folders"] = folders
-			} else {
-				data["FolderError"] = ferr.Error()
-			}
+		if folders, ferr := s.engine.ListRemoteFolders(ctx, uid); ferr == nil {
+			data["Folders"] = folders
+		} else {
+			data["FolderError"] = ferr.Error()
 		}
 	}
 
@@ -137,6 +137,18 @@ func (s *Server) handleSyncBind2FA(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearBindHandle(w, r)
 	s.redirectSync(w, r, "bound")
+}
+
+// handleSyncCancel aborts an in-progress 2FA bind, clearing the pending handle
+// so the user can start over. The half-created (session-less) account row is
+// harmless and reused on the next bind.
+func (s *Server) handleSyncCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.syncEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	s.clearBindHandle(w, r)
+	s.redirectSync(w, r, "cancelled")
 }
 
 // handleSyncSetFolder records the chosen root Notes folder.

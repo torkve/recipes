@@ -14,7 +14,14 @@
     <label>Код
       <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
     </label>
-    <button class="btn" type="submit">Подтвердить</button>
+    <div class="form-actions">
+      <button class="btn" type="submit">Подтвердить</button>
+    </div>
+  </form>
+  <form class="form" method="post" action="/admin/sync/bind/cancel">
+    {{.CSRFField}}
+    <p class="hint">Не пришёл код или хотите начать заново?</p>
+    <button class="btn btn-secondary" type="submit">Отменить и начать заново</button>
   </form>
 
   {{else if not .Bound}}

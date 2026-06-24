@@ -83,6 +83,7 @@ func (s *Server) routes() http.Handler {
 
 	// Public.
 	mux.HandleFunc("GET /{$}", s.handleHome)
+	mux.HandleFunc("GET /recipes/{id}", s.handleRecipeView)
 
 	// Auth.
 	mux.HandleFunc("GET /admin/login", s.handleLoginForm)

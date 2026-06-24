@@ -9,14 +9,6 @@ import (
 	"recipes/internal/store"
 )
 
-// handleHome renders the public landing page. The full recipe catalog is added
-// in a later step; for now it confirms the layout and auth state.
-func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	data := s.newPageData(r)
-	data["Title"] = ""
-	s.render(w, r, "home", http.StatusOK, data)
-}
-
 // handleLoginForm shows the admin login form. Logged-in users are redirected home.
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 	if currentUser(r) != nil {

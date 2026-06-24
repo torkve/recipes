@@ -1,6 +1,23 @@
 {{define "content"}}
-<section>
-  <h1>Рецепты</h1>
-  <p>Каталог рецептов появится здесь.</p>
+<section class="catalog">
+  <nav class="category-nav" aria-label="Категории">
+    <a class="chip{{if not .SelectedCat}} active{{end}}" href="/">Все</a>
+    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}">{{.Name}}</a>{{end}}
+  </nav>
+
+  {{if .Recipes}}
+  <ul class="recipe-grid">
+    {{range .Recipes}}
+    <li class="recipe-card">
+      <a href="/recipes/{{.ID}}">
+        <span class="recipe-card-title">{{.Title}}</span>
+        {{if .Category}}<span class="recipe-card-cat">{{.Category.Name}}</span>{{end}}
+      </a>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty">Рецептов пока нет.</p>
+  {{end}}
 </section>
 {{end}}

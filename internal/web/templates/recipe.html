@@ -1,0 +1,30 @@
+{{define "content"}}
+<article class="recipe-view">
+  <nav class="breadcrumbs" aria-label="Навигация">
+    <a href="/">Все рецепты</a>
+    {{with .Recipe.Category}} / <a href="/?cat={{.ID}}">{{.Name}}</a>{{end}}
+  </nav>
+
+  <h1>{{.Recipe.Title}}</h1>
+
+  {{if .Recipe.Ingredients}}
+  <section class="ingredients">
+    <h2>Ингредиенты</h2>
+    {{range .Recipe.Ingredients}}
+      {{if .Subtitle}}<h3>{{.Subtitle}}</h3>{{end}}
+      {{if .Items}}<ul>{{range .Items}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{end}}
+  </section>
+  {{end}}
+
+  <section class="preparation">
+    <h2>Приготовление</h2>
+    <div class="steps-body">{{.StepsHTMLSafe}}</div>
+  </section>
+
+  <div class="recipe-footer">
+    <a href="/">← Назад к списку</a>
+    {{if .User}}<a class="btn" href="/admin/recipes/{{.Recipe.ID}}/edit">Редактировать</a>{{end}}
+  </div>
+</article>
+{{end}}

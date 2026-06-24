@@ -26,10 +26,18 @@ func categoryTree(cats []models.Category) []catNode {
 		children[parent] = append(children[parent], c)
 	}
 
+	// visited guards against a parent cycle in the data (e.g. a manual reparent
+	// that slipped past validation): each category is emitted at most once, so
+	// this renders on every page without risk of infinite recursion.
+	visited := make(map[int64]bool, len(cats))
 	var out []catNode
 	var walk func(parent int64, depth int)
 	walk = func(parent int64, depth int) {
 		for _, c := range children[parent] {
+			if visited[c.ID] {
+				continue
+			}
+			visited[c.ID] = true
 			out = append(out, catNode{Category: c, Depth: depth})
 			walk(c.ID, depth+1)
 		}

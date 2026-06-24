@@ -100,9 +100,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 var categoryMessages = map[string][2]string{
 	"renamed": {"Категория переименована", "notice"},
 	"deleted": {"Категория удалена", "notice"},
-	"dup":     {"Категория с таким названием уже существует", "error"},
-	"inuse":   {"Нельзя удалить категорию, пока в ней есть рецепты", "error"},
-	"empty":   {"Название не может быть пустым", "error"},
+	"dup":        {"Категория с таким названием уже существует", "error"},
+	"inuse":      {"Нельзя удалить категорию, пока в ней есть рецепты", "error"},
+	"empty":      {"Название не может быть пустым", "error"},
+	"reparented": {"Родительская категория обновлена", "notice"},
+	"cycle":      {"Нельзя сделать категорию потомком самой себя", "error"},
 }
 
 // handleAdminCategories lists categories with their recipe counts for the
@@ -148,6 +150,38 @@ func (s *Server) handleCategoryRename(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 	default:
 		http.Redirect(w, r, "/admin/categories?msg=renamed", http.StatusSeeOther)
+	}
+}
+
+// handleCategorySetParent sets (or clears) a category's parent, rejecting cycles.
+func (s *Server) handleCategorySetParent(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var parent *int64
+	if v := strings.TrimSpace(r.PostFormValue("parent_id")); v != "" {
+		pid, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		parent = &pid
+	}
+	switch err := s.store.SetCategoryParent(r.Context(), id, parent); {
+	case errors.Is(err, store.ErrCycle):
+		http.Redirect(w, r, "/admin/categories?msg=cycle", http.StatusSeeOther)
+	case errors.Is(err, store.ErrNotFound):
+		http.NotFound(w, r)
+	case err != nil:
+		s.serverError(w, err)
+	default:
+		http.Redirect(w, r, "/admin/categories?msg=reparented", http.StatusSeeOther)
 	}
 }
 

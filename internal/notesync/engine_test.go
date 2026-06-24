@@ -299,6 +299,82 @@ func TestPullDropsUnresolvableImageMarker(t *testing.T) {
 	}
 }
 
+func TestPullReparentsNullCategoriesOnly(t *testing.T) {
+	ctx := context.Background()
+	eng, st, fp, uid := newTestEngine(t)
+	mustBind(t, eng, uid)
+
+	// Pre-existing flat (parent NULL) categories, as if created before hierarchy
+	// support, plus a manually-parented one. Names avoid the seeded builtins.
+	supy, err := st.CreateCategoryWithParent(ctx, "Бабушкины супы", nil, models.SourceICloud)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hol, err := st.CreateCategoryWithParent(ctx, "Холодные первые", nil, models.SourceICloud)
+	if err != nil {
+		t.Fatal(err)
+	}
+	des, err := st.CreateCategoryWithParent(ctx, "Домашние десерты", nil, models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	torty, err := st.CreateCategoryWithParent(ctx, "Праздничные торты", nil, models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetCategoryParent(ctx, torty.ID, &des.ID); err != nil { // manual move
+		t.Fatal(err)
+	}
+
+	// Folder tree: Холодные under Супы; Торты under Супы (conflicts with the
+	// manual Торты->Десерты, which must win).
+	fp.folders = []Folder{
+		{ID: "f-supy", ParentID: "", Name: "Бабушкины супы"},
+		{ID: "f-hol", ParentID: "f-supy", Name: "Холодные первые"},
+		{ID: "f-torty", ParentID: "f-supy", Name: "Праздничные торты"},
+	}
+	if _, err := eng.PullUser(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+
+	// NULL category adopts the folder parent.
+	if got, _ := st.GetCategory(ctx, hol.ID); got.ParentID == nil || *got.ParentID != supy.ID {
+		t.Fatalf("Холодные parent = %v, want %d (Супы)", got.ParentID, supy.ID)
+	}
+	// Manually-parented category is left untouched by sync.
+	if got, _ := st.GetCategory(ctx, torty.ID); got.ParentID == nil || *got.ParentID != des.ID {
+		t.Fatalf("Торты parent = %v, want %d (Десерты, manual)", got.ParentID, des.ID)
+	}
+
+	// Idempotent: a second pull does not flip-flop either parent.
+	if _, err := eng.PullUser(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetCategory(ctx, hol.ID); got.ParentID == nil || *got.ParentID != supy.ID {
+		t.Fatalf("Холодные parent changed on second pull: %v", got.ParentID)
+	}
+	if got, _ := st.GetCategory(ctx, torty.ID); got.ParentID == nil || *got.ParentID != des.ID {
+		t.Fatalf("Торты parent changed on second pull: %v", got.ParentID)
+	}
+}
+
+func TestPullToleratesDuplicateNestedFolders(t *testing.T) {
+	ctx := context.Background()
+	eng, _, fp, uid := newTestEngine(t)
+	mustBind(t, eng, uid)
+
+	// Two folders whose names normalize to the same key, nested. They collapse
+	// onto one category, so adopting the "parent" would be a self-parent cycle —
+	// the pull must tolerate that, not abort.
+	fp.folders = []Folder{
+		{ID: "d1", ParentID: "", Name: "Соусы"},
+		{ID: "d2", ParentID: "d1", Name: "СОУСЫ"},
+	}
+	if _, err := eng.PullUser(ctx, uid); err != nil {
+		t.Fatalf("pull aborted on duplicate nested folders: %v", err)
+	}
+}
+
 func mustBind(t *testing.T, eng *Engine, uid int64) {
 	t.Helper()
 	ctx := context.Background()

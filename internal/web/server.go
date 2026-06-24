@@ -109,6 +109,7 @@ func (s *Server) routes() http.Handler {
 	// Admin: category (reference) management.
 	mux.HandleFunc("GET /admin/categories", s.requireAuth(s.handleAdminCategories))
 	mux.HandleFunc("POST /admin/categories/{id}/rename", s.requireAuth(s.handleCategoryRename))
+	mux.HandleFunc("POST /admin/categories/{id}/parent", s.requireAuth(s.handleCategorySetParent))
 	mux.HandleFunc("POST /admin/categories/{id}/delete", s.requireAuth(s.handleCategoryDelete))
 
 	// Admin: iCloud sync (handlers report 404 when the feature is disabled).

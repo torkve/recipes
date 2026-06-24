@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -38,6 +39,57 @@ func TestMigrateSeedsBuiltinCategories(t *testing.T) {
 	cats2, _ := s.ListCategories(context.Background())
 	if len(cats2) != len(builtinCategories) {
 		t.Fatalf("re-migrate changed category count to %d", len(cats2))
+	}
+}
+
+func TestSetCategoryParent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	a, _ := s.CreateCategoryWithParent(ctx, "A", nil, models.SourceManual)
+	b, _ := s.CreateCategoryWithParent(ctx, "B", nil, models.SourceManual)
+	c, _ := s.CreateCategoryWithParent(ctx, "C", nil, models.SourceManual)
+
+	// Set B under A.
+	if err := s.SetCategoryParent(ctx, b.ID, &a.ID); err != nil {
+		t.Fatalf("set B<-A: %v", err)
+	}
+	if got, _ := s.GetCategory(ctx, b.ID); got.ParentID == nil || *got.ParentID != a.ID {
+		t.Fatalf("B parent = %v, want %d", got.ParentID, a.ID)
+	}
+	// Set C under B (A->B->C chain).
+	if err := s.SetCategoryParent(ctx, c.ID, &b.ID); err != nil {
+		t.Fatalf("set C<-B: %v", err)
+	}
+
+	// Self-parent is a cycle.
+	if err := s.SetCategoryParent(ctx, a.ID, &a.ID); !errors.Is(err, ErrCycle) {
+		t.Fatalf("self-parent: got %v, want ErrCycle", err)
+	}
+	// A under C would close the A->B->C->A cycle.
+	if err := s.SetCategoryParent(ctx, a.ID, &c.ID); !errors.Is(err, ErrCycle) {
+		t.Fatalf("descendant-parent: got %v, want ErrCycle", err)
+	}
+	// The rejected writes left A at the top level.
+	if got, _ := s.GetCategory(ctx, a.ID); got.ParentID != nil {
+		t.Fatalf("A parent changed despite cycle rejection: %v", got.ParentID)
+	}
+
+	// Clearing the parent moves B back to the top level.
+	if err := s.SetCategoryParent(ctx, b.ID, nil); err != nil {
+		t.Fatalf("clear B parent: %v", err)
+	}
+	if got, _ := s.GetCategory(ctx, b.ID); got.ParentID != nil {
+		t.Fatalf("B parent not cleared: %v", got.ParentID)
+	}
+
+	// Unknown category / unknown parent.
+	if err := s.SetCategoryParent(ctx, 99999, &a.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: got %v, want ErrNotFound", err)
+	}
+	missing := int64(99999)
+	if err := s.SetCategoryParent(ctx, a.ID, &missing); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown parent: got %v, want ErrNotFound", err)
 	}
 }
 

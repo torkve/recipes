@@ -126,6 +126,33 @@ func TestCategoryTree(t *testing.T) {
 	}
 }
 
+func TestCategoryTreeTerminatesOnCycle(t *testing.T) {
+	// categoryTree runs on every home/admin/recipe-form render, so a corrupt
+	// parent cycle in the data must never make it loop forever or emit a node
+	// twice. A normal root+child still renders; the cyclic pair is dropped
+	// (unreachable from the top level) rather than recursed into.
+	a, b := int64(10), int64(11)
+	cats := []models.Category{
+		{ID: 1, Name: "Корень"},
+		{ID: 2, Name: "Ребёнок", ParentID: &a /* will be remapped below */},
+		{ID: 10, Name: "A", ParentID: &b},
+		{ID: 11, Name: "B", ParentID: &a},
+	}
+	cats[1].ParentID = &cats[0].ID // child of the real root
+	tree := categoryTree(cats)
+
+	seen := map[int64]bool{}
+	for _, n := range tree {
+		if seen[n.ID] {
+			t.Fatalf("category %d emitted more than once", n.ID)
+		}
+		seen[n.ID] = true
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatalf("acyclic root/child not rendered: %+v", tree)
+	}
+}
+
 func TestHomeRendersCategoryHierarchy(t *testing.T) {
 	ts, st := testServer(t)
 	ctx := context.Background()
@@ -137,8 +164,53 @@ func TestHomeRendersCategoryHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := getPage(t, newClient(t), ts.URL+"/")
-	if !strings.Contains(home, "— Торты") {
+	// The child renders indented (non-breaking-space prefix) under its parent.
+	if !strings.Contains(home, " Торты") {
 		t.Error("child category not rendered indented in the nav")
+	}
+}
+
+func TestAdminSetCategoryParent(t *testing.T) {
+	ts, st := testServer(t)
+	ctx := context.Background()
+	a, _ := st.CreateCategoryWithParent(ctx, "A", nil, models.SourceManual)
+	b, _ := st.CreateCategoryWithParent(ctx, "B", nil, models.SourceManual)
+
+	c := newClient(t)
+	login(t, c, ts.URL)
+	tok := token(t, c, ts.URL+"/admin/categories")
+
+	post := func(id int64, parent string) *http.Response {
+		resp, err := c.PostForm(ts.URL+"/admin/categories/"+strconv.FormatInt(id, 10)+"/parent",
+			url.Values{"parent_id": {parent}, "csrf_token": {tok}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	// Set B under A.
+	if resp := post(b.ID, strconv.FormatInt(a.ID, 10)); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("set parent status %d", resp.StatusCode)
+	}
+	if got, _ := st.GetCategory(ctx, b.ID); got.ParentID == nil || *got.ParentID != a.ID {
+		t.Fatalf("B parent = %v, want %d", got.ParentID, a.ID)
+	}
+
+	// A under B would create a cycle: rejected with the cycle flash, unchanged.
+	resp := post(a.ID, strconv.FormatInt(b.ID, 10))
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "msg=cycle") {
+		t.Fatalf("cycle attempt: status %d location %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if got, _ := st.GetCategory(ctx, a.ID); got.ParentID != nil {
+		t.Fatalf("A parent changed despite cycle: %v", got.ParentID)
+	}
+
+	// Clearing B's parent moves it back to the top level.
+	post(b.ID, "")
+	if got, _ := st.GetCategory(ctx, b.ID); got.ParentID != nil {
+		t.Fatalf("B parent not cleared: %v", got.ParentID)
 	}
 }
 

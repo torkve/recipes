@@ -138,6 +138,60 @@ func (s *Store) CreateCategoryWithParent(ctx context.Context, name string, paren
 	return &models.Category{ID: id, Name: name, NameNorm: norm, ParentID: parentID, Source: source}, nil
 }
 
+// SetCategoryParent sets (parentID != nil) or clears (parentID == nil) a
+// category's parent. Returns ErrNotFound if id (or a non-nil parent) does not
+// exist, or ErrCycle if the new parent is the category itself or one of its
+// descendants. The descendant check and the update run in one transaction so a
+// concurrent reparent cannot race a cycle in.
+func (s *Store) SetCategoryParent(ctx context.Context, id int64, parentID *int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var tmp int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM categories WHERE id = ?`, id).Scan(&tmp); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	if parentID != nil {
+		// Walk up the ancestor chain from the proposed parent: reaching id means
+		// the parent is a descendant of id (a cycle). The seen-set also stops a
+		// pre-existing corrupt cycle from looping forever.
+		seen := map[int64]bool{}
+		for cur := *parentID; ; {
+			if cur == id {
+				return ErrCycle
+			}
+			if seen[cur] {
+				break
+			}
+			seen[cur] = true
+			var next sql.NullInt64
+			err := tx.QueryRowContext(ctx, `SELECT parent_id FROM categories WHERE id = ?`, cur).Scan(&next)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound // proposed parent does not exist
+			}
+			if err != nil {
+				return err
+			}
+			if !next.Valid {
+				break
+			}
+			cur = next.Int64
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE categories SET parent_id = ? WHERE id = ?`, parentID, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // RenameCategory changes a category's display name and normalized key.
 // Returns ErrDuplicate if the new normalized name collides with another category.
 func (s *Store) RenameCategory(ctx context.Context, id int64, newName string) error {

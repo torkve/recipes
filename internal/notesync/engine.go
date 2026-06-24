@@ -329,6 +329,16 @@ func (e *Engine) resolveFolderCategories(ctx context.Context, folders []Folder) 
 		cat, err := e.store.CategoryByNorm(ctx, store.NormalizeName(name))
 		if errors.Is(err, store.ErrNotFound) {
 			cat, err = e.store.CreateCategoryWithParent(ctx, name, parent, models.SourceICloud)
+		} else if err == nil && cat.ParentID == nil && parent != nil && *parent != cat.ID {
+			// Adopt the folder parent for a category that predates hierarchy
+			// support (stuck at NULL). Only when currently NULL, so a manual
+			// reparent in the app is never silently overwritten by sync. Two
+			// folders whose names normalize equal collapse onto one category, so
+			// a self-parent (and thus ErrCycle) is possible with malformed remote
+			// data — tolerate it rather than aborting the whole pull.
+			if serr := e.store.SetCategoryParent(ctx, cat.ID, parent); serr != nil && !errors.Is(serr, store.ErrCycle) {
+				return nil, serr
+			}
 		}
 		if err != nil {
 			return nil, err

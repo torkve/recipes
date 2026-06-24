@@ -32,6 +32,14 @@ func templateFuncs() template.FuncMap {
 			return strings.Join(items, "\n")
 		},
 		"repeat": strings.Repeat,
+		// deref turns a *int64 (e.g. Category.ParentID) into a comparable int64,
+		// yielding 0 for nil so it never matches a real (>=1) category id.
+		"deref": func(p *int64) int64 {
+			if p == nil {
+				return 0
+			}
+			return *p
+		},
 	}
 }
 

@@ -1,6 +1,7 @@
 package icloud
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
@@ -14,41 +15,92 @@ const (
 	oauthRedir = "https://www.icloud.com"
 )
 
-// signinBody is the JSON posted to idmsa .../signin.
-type signinBody struct {
-	AccountName string   `json:"accountName"`
-	Password    string   `json:"password"`
-	RememberMe  bool     `json:"rememberMe"`
-	TrustTokens []string `json:"trustTokens,omitempty"`
+// buildFederateBody is the JSON posted to .../federate (detects managed accounts).
+func buildFederateBody(appleID string) ([]byte, error) {
+	return json.Marshal(map[string]any{"accountName": appleID, "rememberMe": false})
 }
 
-// buildSigninBody builds the sign-in request body (pure).
-func buildSigninBody(appleID, password string, trustTokens []string) ([]byte, error) {
-	return json.Marshal(signinBody{
-		AccountName: appleID,
-		Password:    password,
-		RememberMe:  true,
-		TrustTokens: trustTokens,
+// buildSigninInitBody is the SRP init request: the client public value A
+// (base64), the account name, and the supported password protocols.
+func buildSigninInitBody(appleID string, aWire []byte) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"a":           base64.StdEncoding.EncodeToString(aWire),
+		"accountName": appleID,
+		"protocols":   []string{"s2k", "s2k_fo"},
 	})
 }
 
-// authHeaders returns the OAuth headers idmsa requires (pure). state is a
-// per-attempt random identifier.
-func authHeaders(state string) map[string]string {
-	return map[string]string{
-		"Content-Type":                "application/json",
-		"Accept":                      "application/json, text/javascript, */*; q=0.01",
-		"X-Apple-Widget-Key":          widgetKey,
-		"X-Apple-OAuth-Client-Id":     widgetKey,
-		"X-Apple-OAuth-Client-Type":   "firstPartyAuth",
-		"X-Apple-OAuth-Redirect-URI":  oauthRedir,
-		"X-Apple-OAuth-Response-Mode": "web_message",
-		"X-Apple-OAuth-Response-Type": "code",
-		"X-Apple-OAuth-State":         state,
-		"X-Requested-With":            "XMLHttpRequest",
-		"Origin":                      "https://idmsa.apple.com",
-		"Referer":                     "https://idmsa.apple.com/",
+// signinInitResp is the SRP challenge returned by .../signin/init.
+type signinInitResp struct {
+	Iteration int    `json:"iteration"`
+	Salt      string `json:"salt"`
+	Protocol  string `json:"protocol"`
+	B         string `json:"b"`
+	C         string `json:"c"`
+}
+
+// parseSigninInit decodes the SRP challenge (pure).
+func parseSigninInit(body []byte) (salt, B []byte, iter int, protocol, c string, err error) {
+	var r signinInitResp
+	if err = json.Unmarshal(body, &r); err != nil {
+		return nil, nil, 0, "", "", fmt.Errorf("icloud: parse signin/init: %w", err)
 	}
+	if salt, err = base64.StdEncoding.DecodeString(r.Salt); err != nil {
+		return nil, nil, 0, "", "", fmt.Errorf("icloud: signin/init salt: %w", err)
+	}
+	if B, err = base64.StdEncoding.DecodeString(r.B); err != nil {
+		return nil, nil, 0, "", "", fmt.Errorf("icloud: signin/init b: %w", err)
+	}
+	if r.Iteration <= 0 || len(salt) == 0 || len(B) == 0 {
+		return nil, nil, 0, "", "", fmt.Errorf("icloud: signin/init response incomplete")
+	}
+	return salt, B, r.Iteration, r.Protocol, r.C, nil
+}
+
+// buildSigninCompleteBody is the SRP complete request: the client proof m1,
+// the expected server proof m2, and the c token from init.
+func buildSigninCompleteBody(appleID, c string, m1, m2 []byte) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"accountName": appleID,
+		"rememberMe":  false,
+		"m1":          base64.StdEncoding.EncodeToString(m1),
+		"c":           c,
+		"m2":          base64.StdEncoding.EncodeToString(m2),
+		"trustTokens": []string{},
+	})
+}
+
+// authHeaders returns the full idmsa header set the iCloud web app sends.
+// frameID is a per-attempt id used as both the OAuth state and frame id.
+func authHeaders(frameID string) map[string]string {
+	return map[string]string{
+		"Content-Type":                     "application/json",
+		"Accept":                           "application/json, text/javascript, */*; q=0.01",
+		"X-Apple-Widget-Key":               widgetKey,
+		"X-Apple-OAuth-Client-Id":          widgetKey,
+		"X-Apple-OAuth-Client-Type":        "firstPartyAuth",
+		"X-Apple-OAuth-Redirect-URI":       oauthRedir,
+		"X-Apple-OAuth-Response-Mode":      "web_message",
+		"X-Apple-OAuth-Response-Type":      "code",
+		"X-Apple-OAuth-State":              frameID,
+		"X-Apple-OAuth-Require-Grant-Code": "true",
+		"X-Apple-Frame-Id":                 frameID,
+		"X-Apple-Domain-Id":                "3",
+		"X-Apple-Locale":                   "en_US",
+		"X-Apple-I-FD-Client-Info":         fdClientInfo(),
+		"X-Apple-Offer-Security-Upgrade":   "1",
+		"X-Requested-With":                 "XMLHttpRequest",
+		"Origin":                           "https://idmsa.apple.com",
+		"Referer":                          "https://idmsa.apple.com/",
+	}
+}
+
+// oauthQuery builds the GET /authorize/signin query that seeds the session.
+func oauthQuery(frameID string) string {
+	return "client_id=" + widgetKey +
+		"&redirect_uri=" + oauthRedir +
+		"&response_type=code&response_mode=web_message" +
+		"&state=" + frameID + "&frame_id=" + frameID + "&authVersion=latest"
 }
 
 // securityCodeBody is the JSON posted to verify an HSA2 2FA code.

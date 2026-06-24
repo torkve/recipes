@@ -12,6 +12,13 @@ import (
 const browserUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 	"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15"
 
+// fdClientInfo returns Apple's fraud-detection client-info header value. The
+// web app computes a device fingerprint in "F"; a headless client sends an empty
+// fingerprint, which Apple accepts for the password/2FA flow.
+func fdClientInfo() string {
+	return `{"U":"` + browserUA + `","L":"en_US","Z":"GMT+00:00","V":"1.1","F":""}`
+}
+
 // setBrowserHeaders adds browser-like headers that Apple expects, without
 // overwriting any explicitly-set values.
 func setBrowserHeaders(req *http.Request) {

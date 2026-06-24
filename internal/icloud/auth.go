@@ -22,16 +22,21 @@ const (
 	hdrSessTok   = "X-Apple-Session-Token"
 	hdrTrustTok  = "X-Apple-TwoSV-Trust-Token"
 	hdrAcctCty   = "X-Apple-ID-Account-Country"
+	hdrAuthAttrs = "X-Apple-Auth-Attributes"
 )
 
-// bindHandle is the opaque continuation between Begin and Complete.
-type bindHandle struct {
-	AppleID      string        `json:"apple_id"`
-	SessionID    string        `json:"session_id"`
-	Scnt         string        `json:"scnt"`
-	SessionToken string        `json:"session_token"`
-	Country      string        `json:"country"`
-	Cookies      []SavedCookie `json:"cookies"`
+// authState is the in-flight idmsa auth session, threaded through the SRP steps
+// and serialized into a BindHandle so the 2FA step can resume it.
+type authState struct {
+	AppleID        string        `json:"apple_id"`
+	FrameID        string        `json:"frame_id"`
+	Scnt           string        `json:"scnt"`
+	SessionID      string        `json:"session_id"`
+	AuthAttributes string        `json:"auth_attributes"`
+	SessionToken   string        `json:"session_token"` // X-Apple-Session-Token (dsWebAuthToken)
+	TrustToken     string        `json:"trust_token"`
+	Country        string        `json:"country"`
+	Cookies        []SavedCookie `json:"cookies"`
 }
 
 func newJarClient() *http.Client {
@@ -42,61 +47,146 @@ func newJarClient() *http.Client {
 func randState() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return "auth-" + hex.EncodeToString(b)
+	return hex.EncodeToString(b)
 }
 
-// Begin submits Apple ID + password. A 409 from idmsa means HSA2 2FA is needed.
+// idmsaDo issues an idmsa request with the full header set plus the current
+// session headers (scnt / session-id / auth-attributes), then folds the
+// response's session headers and cookies back into st.
+func (p *Provider) idmsaDo(ctx context.Context, method, url string, st *authState, body []byte) ([]byte, *http.Response, error) {
+	headers := authHeaders(st.FrameID)
+	if st.Scnt != "" {
+		headers[hdrScnt] = st.Scnt
+	}
+	if st.SessionID != "" {
+		headers[hdrSessionID] = st.SessionID
+	}
+	if st.AuthAttributes != "" {
+		headers[hdrAuthAttrs] = st.AuthAttributes
+	}
+	respBody, resp, err := p.rawDo(ctx, method, url, headers, body)
+	if resp != nil {
+		captureSessionState(resp, st)
+	}
+	return respBody, resp, err
+}
+
+// captureSessionState updates st with any session headers / cookies the response
+// carries. scnt rotates on every response, so the latest value must be reused.
+func captureSessionState(resp *http.Response, st *authState) {
+	if v := resp.Header.Get(hdrScnt); v != "" {
+		st.Scnt = v
+	}
+	if v := resp.Header.Get(hdrSessionID); v != "" {
+		st.SessionID = v
+	}
+	if v := resp.Header.Get(hdrAuthAttrs); v != "" {
+		st.AuthAttributes = v
+	}
+	if v := resp.Header.Get(hdrSessTok); v != "" {
+		st.SessionToken = v
+	}
+	if v := resp.Header.Get(hdrTrustTok); v != "" {
+		st.TrustToken = v
+	}
+	if v := resp.Header.Get(hdrAcctCty); v != "" {
+		st.Country = v
+	}
+	st.Cookies = mergeCookies(st.Cookies, saveCookies(resp))
+}
+
+// Begin runs Apple's SRP-6a sign-in: authorize (seed session) → federate →
+// signin/init (SRP challenge) → signin/complete (SRP proof). A 409 means HSA2
+// two-factor is required next.
 func (p *Provider) Begin(ctx context.Context, appleID, password string) (notesync.BindResult, error) {
-	body, err := buildSigninBody(appleID, password, nil)
+	st := &authState{AppleID: appleID, FrameID: randState()}
+
+	// Seed the OAuth session and aasp cookie (the web_message iframe bootstrap).
+	authBody, resp, err := p.idmsaDo(ctx, http.MethodGet, idmsaBase+"/authorize/signin?"+oauthQuery(st.FrameID), st, nil)
 	if err != nil {
 		return notesync.BindResult{}, err
 	}
-	headers := authHeaders(randState())
-	respBody, resp, err := p.rawDo(ctx, http.MethodPost, idmsaBase+"/signin?isRememberMeEnabled=true", headers, body)
+	if resp.StatusCode >= 400 {
+		return notesync.BindResult{}, fmt.Errorf("icloud: authorize/signin status %d: %s", resp.StatusCode, truncate(authBody))
+	}
+
+	// Account discovery (managed/federated accounts take a different path).
+	fed, err := buildFederateBody(appleID)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	fedBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/federate?isRememberMeEnabled=true", st, fed)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	if resp.StatusCode >= 400 {
+		return notesync.BindResult{}, fmt.Errorf("icloud: federate status %d: %s", resp.StatusCode, truncate(fedBody))
+	}
+
+	// SRP init: send A, receive salt/B/iteration/protocol.
+	client, err := newSRPClient()
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	initReq, err := buildSigninInitBody(appleID, client.aWire())
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	initBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/init", st, initReq)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	if resp.StatusCode >= 400 {
+		return notesync.BindResult{}, fmt.Errorf("icloud: signin/init status %d: %s", resp.StatusCode, truncate(initBody))
+	}
+	salt, B, iter, protocol, cVal, err := parseSigninInit(initBody)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+
+	// SRP proof from the password.
+	x, err := derivePasswordKey(password, salt, iter, protocol)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	m1, m2, err := client.proof(appleID, x, salt, B)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+
+	// SRP complete.
+	compReq, err := buildSigninCompleteBody(appleID, cVal, m1, m2)
+	if err != nil {
+		return notesync.BindResult{}, err
+	}
+	compBody, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/signin/complete?isRememberMeEnabled=true", st, compReq)
 	if err != nil {
 		return notesync.BindResult{}, err
 	}
 
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNoContent:
-		// Signed in without 2FA.
-		sess, err := p.finishLogin(ctx, resp, "", saveCookies(resp))
+	case http.StatusConflict, http.StatusPreconditionFailed:
+		// HSA2 two-factor required; carry the auth session into Complete.
+		raw, _ := json.Marshal(st)
+		return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
+	case http.StatusOK, http.StatusNoContent, http.StatusFound:
+		// Signed in without 2FA (uncommon).
+		sess, err := p.finishLoginTokens(ctx, st.SessionToken, st.TrustToken, st.Country, st.Cookies)
 		if err != nil {
 			return notesync.BindResult{}, err
 		}
 		sess.AppleID = appleID
-		return notesync.BindResult{Session: sess, Pending: false}, nil
-
-	case http.StatusConflict, http.StatusPreconditionFailed:
-		// HSA2 two-factor required; carry the auth session into Complete.
-		h := bindHandle{
-			AppleID:      appleID,
-			SessionID:    resp.Header.Get(hdrSessionID),
-			Scnt:         resp.Header.Get(hdrScnt),
-			SessionToken: resp.Header.Get(hdrSessTok),
-			Country:      resp.Header.Get(hdrAcctCty),
-			Cookies:      saveCookies(resp),
-		}
-		raw, _ := json.Marshal(h)
-		return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
-
+		return notesync.BindResult{Session: sess}, nil
 	default:
-		return notesync.BindResult{}, fmt.Errorf("icloud: signin status %d: %s", resp.StatusCode, truncate(respBody))
+		return notesync.BindResult{}, fmt.Errorf("icloud: signin/complete status %d: %s", resp.StatusCode, truncate(compBody))
 	}
 }
 
-// Complete submits the 2FA code, trusts the device, and finishes login.
+// Complete submits the 2FA code, trusts the session, and finishes login.
 func (p *Provider) Complete(ctx context.Context, handle notesync.BindHandle, code string) (notesync.Session, error) {
-	var h bindHandle
-	if err := json.Unmarshal(handle, &h); err != nil {
+	var st authState
+	if err := json.Unmarshal(handle, &st); err != nil {
 		return nil, fmt.Errorf("icloud: bad bind handle: %w", err)
-	}
-
-	sessHeaders := map[string]string{
-		hdrSessionID:              h.SessionID,
-		hdrScnt:                   h.Scnt,
-		"X-Apple-Widget-Key":      widgetKey,
-		"X-Apple-OAuth-Client-Id": widgetKey,
 	}
 
 	// Verify the security code.
@@ -104,41 +194,25 @@ func (p *Provider) Complete(ctx context.Context, handle notesync.BindHandle, cod
 	if err != nil {
 		return nil, err
 	}
-	if _, resp, err := p.rawDo(ctx, http.MethodPost, idmsaBase+"/verify/trusteddevice/securitycode", sessHeaders, codeBody); err != nil {
-		return nil, err
-	} else if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("icloud: 2FA verify failed: status %d", resp.StatusCode)
-	}
-
-	// Trust this session so future logins skip 2FA.
-	_, trustResp, err := p.rawDo(ctx, http.MethodGet, idmsaBase+"/2sv/trust", sessHeaders, nil)
+	body, resp, err := p.idmsaDo(ctx, http.MethodPost, idmsaBase+"/verify/trusteddevice/securitycode", &st, codeBody)
 	if err != nil {
 		return nil, err
 	}
-	trustToken := trustResp.Header.Get(hdrTrustTok)
-	sessionToken := trustResp.Header.Get(hdrSessTok)
-	if sessionToken == "" {
-		sessionToken = h.SessionToken
-	}
-	country := trustResp.Header.Get(hdrAcctCty)
-	if country == "" {
-		country = h.Country
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("icloud: 2FA verify status %d: %s", resp.StatusCode, truncate(body))
 	}
 
-	sess, err := p.finishLoginTokens(ctx, sessionToken, trustToken, country, mergeCookies(h.Cookies, saveCookies(trustResp)))
+	// Trust this session so future logins can skip 2FA.
+	if _, _, err := p.idmsaDo(ctx, http.MethodGet, idmsaBase+"/2sv/trust", &st, nil); err != nil {
+		return nil, err
+	}
+
+	sess, err := p.finishLoginTokens(ctx, st.SessionToken, st.TrustToken, st.Country, st.Cookies)
 	if err != nil {
 		return nil, err
 	}
-	sess.AppleID = h.AppleID
+	sess.AppleID = st.AppleID
 	return sess, nil
-}
-
-// finishLogin extracts the session token from a signed-in response and runs
-// accountLogin.
-func (p *Provider) finishLogin(ctx context.Context, resp *http.Response, trustToken string, cookies []SavedCookie) (*Session, error) {
-	sessionToken := resp.Header.Get(hdrSessTok)
-	country := resp.Header.Get(hdrAcctCty)
-	return p.finishLoginTokens(ctx, sessionToken, trustToken, country, cookies)
 }
 
 // finishLoginTokens runs setup.icloud.com/accountLogin and builds a Session.

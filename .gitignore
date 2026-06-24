@@ -13,3 +13,6 @@
 # Editor / OS
 .DS_Store
 *.swp
+
+# Captured HAR files may contain real auth cookies/tokens — never commit
+*.har

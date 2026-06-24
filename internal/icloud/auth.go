@@ -95,6 +95,28 @@ func captureSessionState(resp *http.Response, st *authState) {
 	st.Cookies = mergeCookies(st.Cookies, saveCookies(resp))
 }
 
+// requestTrustedDeviceCode asks Apple to send the HSA2 security code to the
+// account's trusted devices. It fetches the 2FA context (for diagnostics) and
+// then issues the explicit "send code" request. Both calls are best-effort:
+// failures are logged but must not block showing the code-entry form (the GET
+// alone often primes the push).
+func (p *Provider) requestTrustedDeviceCode(ctx context.Context, st *authState) {
+	if body, resp, err := p.idmsaDo(ctx, http.MethodGet, idmsaBase, st, nil); err != nil {
+		log.Printf("icloud: 2FA context fetch failed: %v", err)
+	} else if resp.StatusCode >= 400 {
+		log.Printf("icloud: 2FA context fetch status %d", resp.StatusCode)
+	} else {
+		td, ph := parseAuthContext(body)
+		log.Printf("icloud: 2FA context: trustedDevices=%d trustedPhones=%d", td, ph)
+	}
+
+	if _, resp, err := p.idmsaDo(ctx, http.MethodPut, idmsaBase+"/verify/trusteddevice", st, nil); err != nil {
+		log.Printf("icloud: request trusted-device code failed: %v", err)
+	} else {
+		log.Printf("icloud: request trusted-device code: status %d", resp.StatusCode)
+	}
+}
+
 // Begin runs Apple's SRP-6a sign-in: authorize (seed session) → federate →
 // signin/init (SRP challenge) → signin/complete (SRP proof). A 409 means HSA2
 // two-factor is required next.
@@ -170,8 +192,11 @@ func (p *Provider) Begin(ctx context.Context, appleID, password string) (notesyn
 
 	switch resp.StatusCode {
 	case http.StatusConflict, http.StatusPreconditionFailed:
-		// HSA2 two-factor required; carry the auth session into Complete.
+		// HSA2 two-factor required. Apple does not auto-push the code to the
+		// headless flow, so explicitly request a trusted-device code before
+		// returning. This also rotates scnt/session-id into st for Complete.
 		log.Printf("icloud: SRP variant %d accepted (2FA required)", p.srpVariant)
+		p.requestTrustedDeviceCode(ctx, st)
 		raw, _ := json.Marshal(st)
 		return notesync.BindResult{Pending: true, Handle: notesync.BindHandle(raw)}, nil
 	case http.StatusOK, http.StatusNoContent, http.StatusFound:

@@ -103,6 +103,25 @@ func oauthQuery(frameID string) string {
 		"&state=" + frameID + "&frame_id=" + frameID + "&authVersion=latest"
 }
 
+// authContext is the relevant slice of the GET /appleauth/auth 2FA response.
+type authContext struct {
+	AuthType            string `json:"authType"`
+	TrustedDeviceCount  int    `json:"trustedDeviceCount"`
+	TrustedPhoneNumbers []struct {
+		ID int `json:"id"`
+	} `json:"trustedPhoneNumbers"`
+}
+
+// parseAuthContext extracts the trusted-device and trusted-phone counts from the
+// 2FA context (best-effort; returns zeros on parse failure).
+func parseAuthContext(body []byte) (trustedDevices, phones int) {
+	var c authContext
+	if err := json.Unmarshal(body, &c); err != nil {
+		return 0, 0
+	}
+	return c.TrustedDeviceCount, len(c.TrustedPhoneNumbers)
+}
+
 // securityCodeBody is the JSON posted to verify an HSA2 2FA code.
 type securityCodeBody struct {
 	SecurityCode struct {

@@ -72,6 +72,17 @@ func TestBuildSigninCompleteBody(t *testing.T) {
 	}
 }
 
+func TestParseAuthContext(t *testing.T) {
+	td, ph := parseAuthContext([]byte(`{"authType":"hsa2","trustedDeviceCount":2,"trustedPhoneNumbers":[{"id":1},{"id":2},{"id":3}]}`))
+	if td != 2 || ph != 3 {
+		t.Fatalf("got trustedDevices=%d phones=%d, want 2/3", td, ph)
+	}
+	// Malformed input degrades to zeros, not a panic.
+	if td, ph := parseAuthContext([]byte("not json")); td != 0 || ph != 0 {
+		t.Fatalf("malformed should give 0/0, got %d/%d", td, ph)
+	}
+}
+
 func TestAuthHeadersComplete(t *testing.T) {
 	h := authHeaders("frame-123")
 	for _, k := range []string{

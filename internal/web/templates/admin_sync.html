@@ -60,7 +60,7 @@
   {{if .Folder}}
   <div class="sync-actions">
     <form class="inline" method="post" action="/admin/sync/pull"><button class="btn" type="submit">Синхронизировать из iCloud</button></form>
-    <form class="inline" method="post" action="/admin/sync/push"><button class="btn btn-secondary" type="submit">Отправить в iCloud</button></form>
+    <a class="btn btn-secondary" href="/admin/sync/push/preview">Отправить в iCloud…</a>
   </div>
   {{end}}
   {{end}}

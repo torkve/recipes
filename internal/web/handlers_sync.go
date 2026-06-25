@@ -22,9 +22,10 @@ var syncMessages = map[string]string{
 	"2faerr":    "Неверный код подтверждения",
 	"nohandle":  "Сессия входа истекла, начните заново",
 	"nofolder":  "Укажите папку",
-	"pullerr":   "Ошибка синхронизации из iCloud",
-	"pusherr":   "Ошибка отправки в iCloud",
-	"needsbind": "Сначала привяжите аккаунт iCloud",
+	"pullerr":    "Ошибка синхронизации из iCloud",
+	"pusherr":    "Ошибка отправки в iCloud",
+	"previewerr": "Не удалось вычислить изменения для отправки",
+	"needsbind":  "Сначала привяжите аккаунт iCloud",
 }
 
 func (s *Server) syncEnabled() bool { return s.engine != nil }
@@ -227,6 +228,33 @@ func (s *Server) handleSyncPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirectSync(w, r, "pulled")
+}
+
+// handleSyncPushPreview computes a read-only diff of what an outbound sync would
+// change in iCloud and renders it for confirmation. The push itself runs only
+// when the user submits the confirm form (POST /admin/sync/push); nothing is
+// written here.
+func (s *Server) handleSyncPushPreview(w http.ResponseWriter, r *http.Request) {
+	if !s.syncEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	ctx := r.Context()
+	uid := currentUser(r).ID
+	preview, err := s.engine.PlanPushDiff(ctx, uid)
+	if err != nil {
+		logError(err)
+		if errors.Is(err, store.ErrNotFound) {
+			s.redirectSync(w, r, "needsbind")
+			return
+		}
+		s.redirectSync(w, r, "previewerr")
+		return
+	}
+	data := s.newPageData(r)
+	data["Title"] = "Предпросмотр отправки в iCloud"
+	data["Preview"] = preview
+	s.render(w, r, "admin_sync_push_preview", http.StatusOK, data)
 }
 
 // handleSyncPush triggers an outbound sync.

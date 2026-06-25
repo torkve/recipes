@@ -106,6 +106,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/sync/bind/cancel", s.requireAuth(s.handleSyncCancel))
 	mux.HandleFunc("POST /admin/sync/folder", s.requireAuth(s.handleSyncSetFolder))
 	mux.HandleFunc("POST /admin/sync/pull", s.requireAuth(s.handleSyncPull))
+	mux.HandleFunc("GET /admin/sync/push/preview", s.requireAuth(s.handleSyncPushPreview))
 	mux.HandleFunc("POST /admin/sync/push", s.requireAuth(s.handleSyncPush))
 	mux.HandleFunc("POST /admin/sync/conflicts/{id}/resolve", s.requireAuth(s.handleSyncResolve))
 	mux.HandleFunc("POST /admin/sync/unbind", s.requireAuth(s.handleSyncUnbind))

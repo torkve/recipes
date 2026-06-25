@@ -221,6 +221,19 @@ button.menu-item { border: none; color: var(--muted); }
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   flex-wrap: wrap; padding: 0.6rem 0; border-bottom: 1px solid var(--border);
 }
+/* iCloud push preview (diff) */
+.push-item { margin: 1rem 0; }
+.push-item h3 { margin: 0 0 0.3rem; }
+.push-flag { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
+.diff {
+  border: 1px solid var(--border); border-radius: 6px; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem;
+}
+.diff-line { padding: 0.05rem 0.5rem; white-space: pre-wrap; }
+.diff-add { background: #e6f4ea; color: #1b6e2e; }
+.diff-del { background: #fce8e6; color: #b00020; }
+.diff-context { color: var(--muted); }
+
 .admin-table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
 .admin-table th, .admin-table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 .row-actions { display: flex; gap: 0.75rem; align-items: center; white-space: nowrap; }

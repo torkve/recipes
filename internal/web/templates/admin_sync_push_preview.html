@@ -1,0 +1,52 @@
+{{define "content"}}
+<section class="sync">
+  <div class="list-head">
+    <h1>Предпросмотр отправки в iCloud</h1>
+    <a href="/admin/sync">← Назад</a>
+  </div>
+
+  {{if not .Preview.HasChanges}}
+  <p class="notice">Нечего отправлять — все рецепты уже синхронизированы с iCloud.</p>
+  {{if .Preview.Skipped}}<p class="hint">Без изменений: {{.Preview.Skipped}}.</p>{{end}}
+  <p><a class="btn" href="/admin/sync">Назад</a></p>
+
+  {{else}}
+  <p class="hint">
+    Проверьте изменения перед отправкой. Удаление заметок в iCloud не выполняется —
+    меняются только перечисленные ниже заметки.
+  </p>
+
+  {{with .Preview.Creates}}
+  <h2>Будут созданы заметки ({{len .}})</h2>
+  {{range .}}{{template "push-item" .}}{{end}}
+  {{end}}
+
+  {{with .Preview.Updates}}
+  <h2>Будут перезаписаны заметки ({{len .}})</h2>
+  {{range .}}{{template "push-item" .}}{{end}}
+  {{end}}
+
+  {{if .Preview.Skipped}}<p class="hint">Без изменений: {{.Preview.Skipped}}.</p>{{end}}
+  <p class="hint">Изменения только изображений не отслеживаются: они попадут в iCloud лишь вместе с изменением текста рецепта.</p>
+
+  <div class="sync-actions">
+    <form class="inline" method="post" action="/admin/sync/push">
+      <button class="btn" type="submit">Подтвердить отправку</button>
+    </form>
+    <a class="btn btn-secondary" href="/admin/sync">Отмена</a>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "push-item"}}
+<article class="push-item">
+  <h3>{{.Title}}{{if .Note}} <span class="push-flag">— {{.Note}}</span>{{end}}</h3>
+  {{if or .LocalImages .RemoteImages}}
+  <p class="hint">Изображений: {{.RemoteImages}} → {{.LocalImages}}</p>
+  {{end}}
+  <div class="diff">
+    {{range .Diff}}<div class="diff-line diff-{{.Class}}">{{.Sign}} {{.Text}}</div>{{end}}
+  </div>
+</article>
+{{end}}

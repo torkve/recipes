@@ -185,17 +185,13 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 			return rep, err
 		}
 
-		isNew := rec.ICloudNoteID == nil
-		if !isNew {
-			state, serr := e.store.GetSyncState(ctx, rec.ID)
-			localChanged := errors.Is(serr, store.ErrNotFound) || (serr == nil && HashRecipe(rec) != state.LocalHash)
-			if serr != nil && !errors.Is(serr, store.ErrNotFound) {
-				return rep, serr
-			}
-			if !localChanged {
-				rep.Skipped++
-				continue
-			}
+		op, err := e.classifyPush(ctx, rec)
+		if err != nil {
+			return rep, err
+		}
+		if op == pushSkip {
+			rep.Skipped++
+			continue
 		}
 
 		_, err = e.pushRecipe(ctx, sess, root, rec)
@@ -212,13 +208,46 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 		if err != nil {
 			return rep, err
 		}
-		if isNew {
+		if op == pushCreate {
 			rep.Created++
 		} else {
 			rep.Updated++
 		}
 	}
 	return rep, nil
+}
+
+// pushOp is what a push would do for a single recipe.
+type pushOp int
+
+const (
+	pushSkip   pushOp = iota // linked and unchanged since last sync
+	pushCreate               // no linked note yet -> create one
+	pushUpdate               // linked and locally changed -> overwrite the note
+)
+
+// classifyPush decides, without performing any work, what a push would do for
+// one recipe. A recipe with no linked note is a create; a linked recipe is an
+// update only if its content changed since the last sync, otherwise a skip. A
+// missing sync-state row (linked but never recorded) counts as changed, matching
+// the original push behavior. Any non-not-found store error is propagated.
+//
+// PushUser and PlanPushDiff share this so the preview and the executor can never
+// disagree.
+func (e *Engine) classifyPush(ctx context.Context, rec *models.Recipe) (pushOp, error) {
+	if rec.ICloudNoteID == nil {
+		return pushCreate, nil
+	}
+	state, serr := e.store.GetSyncState(ctx, rec.ID)
+	if serr != nil && !errors.Is(serr, store.ErrNotFound) {
+		return pushSkip, serr
+	}
+	// Short-circuit keeps a nil state (not-found) from being dereferenced.
+	localChanged := errors.Is(serr, store.ErrNotFound) || HashRecipe(rec) != state.LocalHash
+	if localChanged {
+		return pushUpdate, nil
+	}
+	return pushSkip, nil
 }
 
 // pushRecipe creates or updates the note for a recipe and re-links it.

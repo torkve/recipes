@@ -26,6 +26,8 @@ type fakeProvider struct {
 	images     map[string][]byte // image ref -> bytes returned by FetchImage
 	imageCalls int
 	imageErr   bool // when true, FetchImage always fails
+
+	pushConflict bool // when true, PushNote reports an etag conflict for updates
 }
 
 type fakeSession struct{ data []byte }
@@ -62,6 +64,9 @@ func (p *fakeProvider) FetchImage(ctx context.Context, sess Session, img NoteIma
 	return img, nil
 }
 func (p *fakeProvider) PushNote(ctx context.Context, sess Session, n Note, expected Etag) (Note, error) {
+	if p.pushConflict && expected != "" {
+		return Note{}, ErrEtagConflict
+	}
 	p.pushCount++
 	if n.ID == "" {
 		n.ID = NoteID(fmt.Sprintf("note-%d", p.pushCount))

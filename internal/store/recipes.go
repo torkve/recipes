@@ -218,16 +218,19 @@ func (s *Store) GetRecipeByNoteID(ctx context.Context, noteID string) (*models.R
 	return r, err
 }
 
-// ListRecipes returns recipes newest-first, optionally filtered by category,
-// each with its Category populated (id + name). Pass limit <= 0 for no limit.
-func (s *Store) ListRecipes(ctx context.Context, categoryID *int64, limit, offset int) ([]models.Recipe, error) {
+// ListRecipes returns recipes newest-first, optionally restricted to a set of
+// category ids (e.g. a category and its subtree), each with its Category
+// populated (id + name). A nil/empty set lists all; pass limit <= 0 for no limit.
+func (s *Store) ListRecipes(ctx context.Context, categoryIDs []int64, limit, offset int) ([]models.Recipe, error) {
 	q := `
 		SELECT r.id, r.title, r.category_id, r.created_at, c.name
 		FROM recipes r JOIN categories c ON c.id = r.category_id`
 	args := []any{}
-	if categoryID != nil {
-		q += ` WHERE r.category_id = ?`
-		args = append(args, *categoryID)
+	if len(categoryIDs) > 0 {
+		q += ` WHERE r.category_id IN (` + placeholders(len(categoryIDs)) + `)`
+		for _, id := range categoryIDs {
+			args = append(args, id)
+		}
 	}
 	q += ` ORDER BY r.created_at DESC, r.id DESC`
 	if limit > 0 {

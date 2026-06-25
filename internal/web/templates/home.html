@@ -7,16 +7,24 @@
     <button type="submit" class="btn">Найти</button>
   </form>
 
-  <nav class="category-nav" id="category-nav" aria-label="Категории">
-    <a class="chip{{if not .SelectedCat}} active{{end}}" href="/" data-cat="">Все</a>
-    {{range .Categories}}<a class="chip{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}" data-cat="{{.ID}}">{{repeat "   " .Depth}}{{.Name}}</a>{{end}}
-  </nav>
+  <div class="catalog-filter">
+    <details class="cat-dropdown" id="category-nav">
+      <summary class="cat-summary">Категории</summary>
+      <div class="cat-panel">
+        <a class="cat-item{{if not .SelectedCat}} active{{end}}" href="/" data-cat="" style="--d:0">Все</a>
+        {{range .Categories}}<a class="cat-item{{if eq .ID $.SelectedCat}} active{{end}}" href="/?cat={{.ID}}" data-cat="{{.ID}}" style="--d:{{.Depth}}">{{.Name}}</a>{{end}}
+      </div>
+    </details>
+    <nav class="breadcrumbs" id="breadcrumbs" aria-label="Категория">{{template "breadcrumbs" .}}</nav>
+  </div>
 
   <div id="results">
     {{template "results" .}}
   </div>
 </section>
 {{end}}
+
+{{define "breadcrumbs"}}<a href="/" data-cat="" class="crumb{{if not .SelectedCat}} current{{end}}">Все</a>{{range .Breadcrumbs}} <span class="crumb-sep">/</span> {{if eq .ID $.SelectedCat}}<span class="crumb current">{{.Name}}</span>{{else}}<a href="/?cat={{.ID}}" data-cat="{{.ID}}" class="crumb">{{.Name}}</a>{{end}}{{end}}{{end}}
 
 {{define "results"}}
   {{if .Recipes}}

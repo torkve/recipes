@@ -25,13 +25,21 @@ func buildFTSQuery(input string) string {
 	return strings.Join(parts, " ")
 }
 
+// placeholders returns "?,?,…" with n placeholders for an IN clause.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat(",?", n)[1:]
+}
+
 // SearchRecipes runs a full-text search over title, ingredients and steps,
-// optionally restricted to a category, ordered by relevance. An empty/whitespace
-// query falls back to the newest-first listing.
-func (s *Store) SearchRecipes(ctx context.Context, query string, categoryID *int64) ([]models.Recipe, error) {
+// optionally restricted to a set of category ids (a category and its subtree),
+// ordered by relevance. An empty/whitespace query falls back to newest-first.
+func (s *Store) SearchRecipes(ctx context.Context, query string, categoryIDs []int64) ([]models.Recipe, error) {
 	match := buildFTSQuery(query)
 	if match == "" {
-		return s.ListRecipes(ctx, categoryID, 0, 0)
+		return s.ListRecipes(ctx, categoryIDs, 0, 0)
 	}
 
 	q := `
@@ -41,9 +49,11 @@ func (s *Store) SearchRecipes(ctx context.Context, query string, categoryID *int
 		JOIN categories c ON c.id = r.category_id
 		WHERE recipes_fts MATCH ?`
 	args := []any{match}
-	if categoryID != nil {
-		q += ` AND r.category_id = ?`
-		args = append(args, *categoryID)
+	if len(categoryIDs) > 0 {
+		q += ` AND r.category_id IN (` + placeholders(len(categoryIDs)) + `)`
+		for _, id := range categoryIDs {
+			args = append(args, id)
+		}
 	}
 	q += ` ORDER BY rank`
 	return s.queryRecipeList(ctx, q, args...)

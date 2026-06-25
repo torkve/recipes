@@ -7,43 +7,31 @@
 
   {{if .Message}}<p class="{{.MessageClass}}">{{.Message}}</p>{{end}}
 
-  <table class="admin-table">
-    <thead><tr><th>Название</th><th>Родитель</th><th>Рецептов</th><th></th></tr></thead>
-    <tbody>
-      {{range $cat := .Categories}}
-      <tr>
-        <td>
-          {{if .Depth}}<span class="cat-indent">{{repeat "— " .Depth}}</span>{{end}}
-          <form class="inline rename-form" method="post" action="/admin/categories/{{.ID}}/rename">
-            {{$.CSRFField}}
-            <input type="text" name="name" value="{{.Name}}" aria-label="Название категории" required>
-            <button type="submit" class="btn-link">Сохранить</button>
-          </form>
-        </td>
-        <td>
-          <form class="inline parent-form" method="post" action="/admin/categories/{{.ID}}/parent">
-            {{$.CSRFField}}
-            <select name="parent_id" aria-label="Родительская категория" onchange="this.form.submit()">
-              <option value="">— нет —</option>
-              {{range $.Categories}}{{if ne .ID $cat.ID}}<option value="{{.ID}}"{{if eq .ID (deref $cat.ParentID)}} selected{{end}}>{{repeat "— " .Depth}}{{.Name}}</option>{{end}}{{end}}
-            </select>
-            <noscript><button type="submit" class="btn-link">OK</button></noscript>
-          </form>
-        </td>
-        <td>{{.RecipeCount}}</td>
-        <td class="row-actions">
-          {{if eq .RecipeCount 0}}
-          <form class="inline" method="post" action="/admin/categories/{{.ID}}/delete" onsubmit="return confirm('Удалить категорию «{{.Name}}»?');">
-            {{$.CSRFField}}
-            <button type="submit" class="btn-link btn-danger-link">Удалить</button>
-          </form>
-          {{else}}
-          <span class="muted-note">используется</span>
-          {{end}}
-        </td>
-      </tr>
+  <p class="hint">Перетащите категорию на другую, чтобы вложить её. Перетащите на «Верхний уровень», чтобы сделать её корневой.</p>
+
+  <div class="cat-tree" id="cat-tree">
+    <div class="cat-droproot" data-parent="">↑ Верхний уровень</div>
+    {{range .Categories}}
+    <div class="cat-node" draggable="true" data-id="{{.ID}}" data-parent="{{deref .ParentID}}" style="--d:{{.Depth}}">
+      <span class="cat-handle" aria-hidden="true" title="Перетащить">⠿</span>
+      <form class="inline rename-form" method="post" action="/admin/categories/{{.ID}}/rename">
+        {{$.CSRFField}}
+        <input type="text" name="name" value="{{.Name}}" aria-label="Название категории" required>
+        <button type="submit" class="btn-link">Сохранить</button>
+      </form>
+      <span class="cat-count" title="Рецептов">{{.RecipeCount}}</span>
+      {{if eq .RecipeCount 0}}
+      <form class="inline" method="post" action="/admin/categories/{{.ID}}/delete" onsubmit="return confirm('Удалить категорию «{{.Name}}»?');">
+        {{$.CSRFField}}
+        <button type="submit" class="btn-link btn-danger-link">Удалить</button>
+      </form>
+      {{else}}
+      <span class="muted-note">используется</span>
       {{end}}
-    </tbody>
-  </table>
+    </div>
+    {{end}}
+  </div>
 </section>
 {{end}}
+
+{{define "scripts"}}<script src="/static/js/categories.js" defer></script>{{end}}

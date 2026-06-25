@@ -126,6 +126,53 @@ func TestCategoryTree(t *testing.T) {
 	}
 }
 
+func TestCategoryPathAndDescendants(t *testing.T) {
+	one, two := int64(1), int64(2)
+	cats := []models.Category{
+		{ID: 1, Name: "Супы"},
+		{ID: 2, Name: "Холодные", ParentID: &one},
+		{ID: 3, Name: "Гаспачо", ParentID: &two},
+		{ID: 4, Name: "Десерты"},
+	}
+	path := categoryPath(cats, 3) // root -> leaf
+	if len(path) != 3 || path[0].ID != 1 || path[1].ID != 2 || path[2].ID != 3 {
+		t.Fatalf("categoryPath(3) = %+v, want [1 2 3]", path)
+	}
+	ds := categoryDescendantIDs(cats, 1) // 1 + all descendants
+	set := map[int64]bool{}
+	for _, id := range ds {
+		set[id] = true
+	}
+	if len(ds) != 3 || !set[1] || !set[2] || !set[3] || set[4] {
+		t.Fatalf("categoryDescendantIDs(1) = %v, want {1,2,3}", ds)
+	}
+}
+
+func TestHomeParentFilterIncludesSubcategories(t *testing.T) {
+	ts, st := testServer(t)
+	ctx := context.Background()
+	sup, err := st.CreateCategoryWithParent(ctx, "СупыТест", nil, models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hot, err := st.CreateCategoryWithParent(ctx, "ГорячиеТест", &sup.ID, models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRecipe(ctx, store.RecipeInput{
+		Title: "Борщ субдерево", CategoryID: hot.ID,
+		Ingredients: []models.IngredientBlock{{Items: []string{"свёкла"}}},
+		StepsHTML:   "<p>Варить.</p>",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Filtering by the PARENT must surface the recipe filed under its child.
+	body := getPage(t, newClient(t), ts.URL+"/?cat="+strconv.FormatInt(sup.ID, 10))
+	if !strings.Contains(body, "Борщ субдерево") {
+		t.Error("parent filter did not include subcategory recipe")
+	}
+}
+
 func TestCategoryTreeTerminatesOnCycle(t *testing.T) {
 	// categoryTree runs on every home/admin/recipe-form render, so a corrupt
 	// parent cycle in the data must never make it loop forever or emit a node
@@ -164,9 +211,10 @@ func TestHomeRendersCategoryHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := getPage(t, newClient(t), ts.URL+"/")
-	// The child renders indented (non-breaking-space prefix) under its parent.
-	if !strings.Contains(home, " Торты") {
-		t.Error("child category not rendered indented in the nav")
+	// The child renders in the dropdown, indented by depth via the --d CSS var
+	// (real indentation, no space padding).
+	if !strings.Contains(home, `style="--d:1"`) || !strings.Contains(home, ">Торты</a>") {
+		t.Errorf("child category not rendered indented in the dropdown")
 	}
 }
 
@@ -298,9 +346,9 @@ func TestScenarioMemberAddsRecipeAndCategory(t *testing.T) {
 			t.Errorf("logged-in main page missing admin link %s", href)
 		}
 	}
-	chip := `data-cat="` + strconv.FormatInt(cat.ID, 10) + `">Десерты</a>`
-	if !strings.Contains(home, chip) {
-		t.Error("new category not shown as a filter chip on the catalog")
+	if !strings.Contains(home, `data-cat="`+strconv.FormatInt(cat.ID, 10)+`"`) ||
+		!strings.Contains(home, ">Десерты</a>") {
+		t.Error("new category not shown in the catalog filter dropdown")
 	}
 	// The recipe is searchable.
 	if body := getPage(t, c, ts.URL+"/?q=тирамису"); !strings.Contains(body, "Тирамису") {

@@ -120,20 +120,54 @@ button.menu-item { border: none; color: var(--muted); }
   flex: 1; padding: 0.55rem 0.7rem;
   border: 1px solid var(--border); border-radius: 6px; font-size: 1rem;
 }
-/* Vertical, indented category tree (sub-categories are prefixed with
-   non-breaking spaces by depth in the template). */
-.category-nav { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; margin: 0.5rem 0 1.5rem; }
-.chip {
-  display: inline-block;
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--fg);
-  text-decoration: none;
-  font-size: 0.9rem;
+/* Compact category filter: a dropdown of the (CSS-indented) tree + breadcrumbs. */
+.catalog-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.75rem; margin: 0.5rem 0 1.25rem; }
+.cat-dropdown { position: relative; }
+.cat-summary {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.4rem 0.8rem; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; color: var(--accent); font-size: 0.9rem; cursor: pointer;
+  list-style: none; user-select: none;
 }
-.chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cat-summary::-webkit-details-marker { display: none; }
+.cat-summary::after { content: "▾"; font-size: 0.75em; }
+.cat-dropdown[open] .cat-summary::after { content: "▴"; }
+.cat-panel {
+  position: absolute; z-index: 50; margin-top: 0.3rem; min-width: 14rem;
+  max-height: 60vh; overflow-y: auto;
+  background: #fff; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); padding: 0.3rem;
+}
+.cat-item {
+  display: block; border-radius: 5px; text-decoration: none; color: var(--text, #222);
+  font-size: 0.92rem; padding: 0.4rem 0.6rem;
+  padding-left: calc(0.6rem + var(--d, 0) * 1rem); /* real indentation by depth */
+}
+.cat-item:hover, .cat-item:focus { background: #f0eee7; }
+.cat-item.active { background: var(--accent); color: #fff; }
+.breadcrumbs { font-size: 0.9rem; color: var(--muted); }
+.breadcrumbs .crumb { color: var(--accent); text-decoration: none; }
+.breadcrumbs .crumb.current { color: var(--muted); font-weight: 600; }
+.breadcrumbs .crumb-sep { color: var(--border); margin: 0 0.15rem; }
+
+/* Admin category tree with drag-and-drop reparenting. */
+.cat-tree { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 1rem; }
+.cat-node {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; background: #fff;
+  margin-left: calc(var(--d, 0) * 1.4rem); /* nesting depth */
+}
+.cat-handle { cursor: grab; color: var(--muted); user-select: none; }
+.cat-node.dragging { opacity: 0.5; }
+.cat-node.drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.cat-node .rename-form { flex: 1; display: flex; gap: 0.4rem; align-items: center; }
+.cat-node .rename-form input { flex: 1; min-width: 6rem; }
+.cat-count { color: var(--muted); font-size: 0.85rem; min-width: 1.5rem; text-align: right; }
+.cat-droproot {
+  padding: 0.4rem 0.6rem; border: 1px dashed var(--border); border-radius: 6px;
+  color: var(--muted); font-size: 0.9rem; text-align: center;
+}
+.cat-droproot.drag-over { border-color: var(--accent); color: var(--accent); background: #f0eee7; }
 
 .recipe-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
 .recipe-card a {

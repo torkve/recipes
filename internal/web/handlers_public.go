@@ -24,11 +24,14 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var selected int64
-	var filter *int64
+	var filter []int64
+	var breadcrumbs []models.Category
 	if c := r.URL.Query().Get("cat"); c != "" {
 		if id, err := strconv.ParseInt(c, 10, 64); err == nil && id > 0 {
 			selected = id
-			filter = &id
+			// Filter by the whole subtree so a parent lists its descendants' recipes.
+			filter = categoryDescendantIDs(cats, id)
+			breadcrumbs = categoryPath(cats, id)
 		}
 	}
 
@@ -50,6 +53,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	data["Categories"] = categoryTree(cats)
 	data["Recipes"] = recipes
 	data["SelectedCat"] = selected
+	data["Breadcrumbs"] = breadcrumbs
 	data["Query"] = query
 	s.render(w, r, "home", http.StatusOK, data)
 }

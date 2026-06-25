@@ -14,5 +14,8 @@
 .DS_Store
 *.swp
 
+# Original task spec; kept locally but not tracked (purged from history)
+/plan.md
+
 # Captured HAR files may contain real auth cookies/tokens — never commit
 *.har

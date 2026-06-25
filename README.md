@@ -70,7 +70,86 @@ docker compose up -d
 
 Бинарник собирается без CGO (чистый Go) — образ статический и самодостаточный
 (шаблоны и статика встроены в бинарник через `go:embed`). За TLS поставьте
-обратный прокси и выставьте `RECIPES_SECURE_COOKIES=true`.
+обратный прокси и выставьте `RECIPES_SECURE_COOKIES=true` (см. ниже).
+
+## Обратный прокси (nginx) и HTTPS
+
+Сервис рассчитан на работу в **корне отдельного хоста** (например,
+`recipes.example.com`), а не на подпути вида `example.com/recipes/`: приложение
+генерирует абсолютные URL от корня (`/static`, `/admin`, `/uploads`, AJAX-запросы)
+и не умеет работать из подкаталога. Для подпути потребовалась бы поддержка
+базового пути в самом приложении (шаблоны, маршруты, JS, cookie) — это отдельная
+доработка.
+
+**1. Привяжите контейнер к localhost**, чтобы наружу его видел только nginx — в
+`.env`:
+
+```sh
+RECIPES_PORT=127.0.0.1:8080   # compose отдаёт "${RECIPES_PORT}:8080"
+```
+
+```sh
+docker compose up -d
+```
+
+**2. Конфиг nginx** (редирект HTTP→HTTPS + проксирование на контейнер). Важно
+сохранять заголовок `Host` (от него зависят проверки CSRF Origin/Referer и
+привязка cookie) и поднять лимит размера тела — вставляемые/загружаемые картинки
+рецептов превышают стандартный 1 МБ nginx:
+
+```nginx
+server {
+    listen 80;
+    server_name recipes.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name recipes.example.com;
+
+    # TLS-сертификаты (см. certbot ниже)
+    ssl_certificate     /etc/letsencrypt/live/recipes.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/recipes.example.com/privkey.pem;
+
+    client_max_body_size 25m;   # загрузка изображений рецептов
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
+```
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**3. TLS через Let's Encrypt** (certbot сам пропишет пути к сертификатам и
+редирект):
+
+```sh
+sudo certbot --nginx -d recipes.example.com
+```
+
+**4. Включите Secure-cookie** — раз сайт теперь по HTTPS, в `.env`:
+
+```sh
+RECIPES_SECURE_COOKIES=true
+```
+
+```sh
+docker compose up -d
+```
+
+> Полностью в Docker: можно поднять nginx в той же сети compose и проксировать на
+> `http://recipes:8080;` — тогда публиковать порт на хост не нужно. У приложения
+> нет WebSocket, заголовки `Upgrade`/`Connection` не требуются.
 
 ## Синхронизация с iCloud
 

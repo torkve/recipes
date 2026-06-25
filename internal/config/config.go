@@ -42,6 +42,19 @@ type Config struct {
 	// throttles repeated attempts, so we try one per bind; if sign-in fails with
 	// 401, set the next index and restart. Default 1 (pyicloud-style).
 	ICloudSRPVariant int
+
+	// EmbedURL is the base URL of the self-hosted embedding service (e.g. HF
+	// text-embeddings-inference). Empty disables semantic search (lexical-only).
+	EmbedURL string
+	// EmbedModel tags stored vectors; changing it triggers a re-embed backfill.
+	EmbedModel string
+	// EmbedDim is the embedding dimension the model returns. Change it together
+	// with EmbedModel: stored vectors are keyed by model name, so a dim change
+	// under the same model leaves old vectors that silently mismatch until the
+	// backfill re-embeds.
+	EmbedDim int
+	// EmbedBackfillMinutes is how often the backfill worker indexes new recipes.
+	EmbedBackfillMinutes int
 }
 
 // DBPath returns the sqlite database file path.
@@ -68,6 +81,11 @@ func Load() (*Config, error) {
 		ICloudEnabled:     envBool("RECIPES_ICLOUD_ENABLED", false),
 		ICloudPullMinutes: envInt("RECIPES_ICLOUD_PULL_MINUTES", 15),
 		ICloudSRPVariant:  envInt("RECIPES_ICLOUD_SRP_VARIANT", 1),
+
+		EmbedURL:             env("RECIPES_EMBED_URL", ""),
+		EmbedModel:           env("RECIPES_EMBED_MODEL", "intfloat/multilingual-e5-small"),
+		EmbedDim:             envInt("RECIPES_EMBED_DIM", 384),
+		EmbedBackfillMinutes: envInt("RECIPES_EMBED_BACKFILL_MINUTES", 5),
 	}
 
 	if c.Addr == "" {

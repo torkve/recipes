@@ -13,8 +13,10 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
+	"recipes/internal/embed"
 	"recipes/internal/icloud"
 	"recipes/internal/notesync"
+	"recipes/internal/search"
 	"recipes/internal/store"
 	"recipes/internal/web"
 )
@@ -75,7 +77,19 @@ func run() error {
 		log.Printf("recipes: iCloud sync enabled")
 	}
 
-	srvHandler, err := web.NewServer(cfg, st, keys, engine)
+	// Search service: lexical (FTS) always; the semantic (embedding) arm turns on
+	// when RECIPES_EMBED_URL points at an embedding service. embed.New returns nil
+	// when disabled — assign through the interface only when non-nil to avoid a
+	// typed-nil interface that would look enabled but panic.
+	embClient := embed.New(cfg.EmbedURL, cfg.EmbedModel, cfg.EmbedDim)
+	var embedder search.Embedder
+	if embClient != nil {
+		embedder = embClient
+		log.Printf("recipes: semantic search enabled (model %s)", cfg.EmbedModel)
+	}
+	searchSvc := search.New(st, embedder)
+
+	srvHandler, err := web.NewServer(cfg, st, keys, engine, searchSvc)
 	if err != nil {
 		return err
 	}
@@ -96,6 +110,12 @@ func run() error {
 	if engine != nil {
 		worker := notesync.NewWorker(engine, st, time.Duration(cfg.ICloudPullMinutes)*time.Minute)
 		go worker.Run(ctx)
+	}
+
+	// Start the semantic-index backfill worker when embeddings are enabled.
+	if embClient != nil {
+		sw := search.NewWorker(searchSvc, st, embClient, time.Duration(cfg.EmbedBackfillMinutes)*time.Minute)
+		go sw.Run(ctx)
 	}
 
 	idleClosed := make(chan struct{})

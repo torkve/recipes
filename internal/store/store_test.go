@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"recipes/internal/models"
@@ -39,6 +41,60 @@ func TestMigrateSeedsBuiltinCategories(t *testing.T) {
 	cats2, _ := s.ListCategories(context.Background())
 	if len(cats2) != len(builtinCategories) {
 		t.Fatalf("re-migrate changed category count to %d", len(cats2))
+	}
+}
+
+func TestEmbeddingsStore(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	cat, _ := s.GetOrCreateCategory(ctx, "Супы", models.SourceManual)
+	rec, err := s.CreateRecipe(ctx, RecipeInput{
+		Title: "Борщ", CategoryID: cat.ID,
+		Ingredients: []models.IngredientBlock{{Items: []string{"свёкла"}}},
+		StepsHTML:   "<p>Варить.</p>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Codec round-trip.
+	vec := []float32{0.5, -1.25, 3.0, 0}
+	if got := decodeVec(encodeVec(vec)); !reflect.DeepEqual(got, vec) {
+		t.Fatalf("vec round-trip: got %v want %v", got, vec)
+	}
+
+	const model = "test-model"
+	// Missing before upsert.
+	miss, _ := s.RecipeIDsMissingEmbedding(ctx, model)
+	if len(miss) != 1 || miss[0] != rec.ID {
+		t.Fatalf("missing before upsert = %v, want [%d]", miss, rec.ID)
+	}
+	// Upsert, then it's present and loadable with the category.
+	if err := s.UpsertEmbedding(ctx, rec.ID, model, len(vec), vec); err != nil {
+		t.Fatal(err)
+	}
+	if miss, _ := s.RecipeIDsMissingEmbedding(ctx, model); len(miss) != 0 {
+		t.Fatalf("missing after upsert = %v, want none", miss)
+	}
+	got, _ := s.EmbeddingsForModel(ctx, model)
+	if len(got) != 1 || got[0].ID != rec.ID || got[0].CategoryID != cat.ID || !reflect.DeepEqual(got[0].Vec, vec) {
+		t.Fatalf("EmbeddingsForModel = %+v", got)
+	}
+	// A different (stale) model reports the recipe as missing again.
+	if miss, _ := s.RecipeIDsMissingEmbedding(ctx, "other-model"); len(miss) != 1 {
+		t.Fatalf("stale-model missing = %v, want 1", miss)
+	}
+	// RecipeEmbedInput flattens title+ingredients+steps.
+	txt, ok, err := s.RecipeEmbedInput(ctx, rec.ID)
+	if err != nil || !ok || !strings.Contains(txt, "Борщ") || !strings.Contains(txt, "свёкла") || !strings.Contains(txt, "Варить") {
+		t.Fatalf("RecipeEmbedInput = %q ok=%v err=%v", txt, ok, err)
+	}
+	// Deleting the recipe cascades the embedding away.
+	if _, err := s.DeleteRecipe(ctx, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.EmbeddingsForModel(ctx, model); len(got) != 0 {
+		t.Fatalf("embedding survived recipe delete: %+v", got)
 	}
 }
 

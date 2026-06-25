@@ -240,6 +240,24 @@ func (s *Store) ListRecipes(ctx context.Context, categoryIDs []int64, limit, off
 	return s.queryRecipeList(ctx, q, args...)
 }
 
+// RecipesByIDs returns the lightweight recipes (id, title, category) for the
+// given ids, in unspecified order (callers re-order). Used to materialize
+// semantic-search hits not already in the lexical result set.
+func (s *Store) RecipesByIDs(ctx context.Context, ids []int64) ([]models.Recipe, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	q := `
+		SELECT r.id, r.title, r.category_id, r.created_at, c.name
+		FROM recipes r JOIN categories c ON c.id = r.category_id
+		WHERE r.id IN (` + placeholders(len(ids)) + `)`
+	return s.queryRecipeList(ctx, q, args...)
+}
+
 func (s *Store) queryRecipeList(ctx context.Context, q string, args ...any) ([]models.Recipe, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

@@ -37,12 +37,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	var recipes []models.Recipe
-	if query != "" {
-		recipes, err = s.store.SearchRecipes(ctx, query, filter)
-	} else {
-		recipes, err = s.store.ListRecipes(ctx, filter, 0, 0)
-	}
+	recipes, err := s.search.Search(ctx, query, filter)
 	if err != nil {
 		s.serverError(w, err)
 		return

@@ -15,6 +15,7 @@ import (
 	"recipes/internal/auth"
 	"recipes/internal/config"
 	"recipes/internal/notesync"
+	"recipes/internal/search"
 	"recipes/internal/store"
 )
 
@@ -28,12 +29,13 @@ type Server struct {
 	sessions  *sessions.FilesystemStore
 	templates map[string]*template.Template
 	engine    *notesync.Engine // nil when iCloud sync is disabled
+	search    *search.Service
 	handler   http.Handler
 }
 
 // NewServer wires templates, session store, CSRF protection and routes. engine
 // may be nil, in which case the iCloud sync routes report the feature is off.
-func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *notesync.Engine) (*Server, error) {
+func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *notesync.Engine, searchSvc *search.Service) (*Server, error) {
 	tmpls, err := loadTemplates(templateFuncs())
 	if err != nil {
 		return nil, err
@@ -45,6 +47,7 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *not
 		sessions:  newSessionStore(cfg.SessionsDir(), keys.SessionAuth, keys.SessionEnc, cfg.SecureCookies),
 		templates: tmpls,
 		engine:    engine,
+		search:    searchSvc,
 	}
 
 	csrfMW := csrf.Protect(

@@ -17,6 +17,7 @@ import (
 	"recipes/internal/auth"
 	"recipes/internal/config"
 	"recipes/internal/models"
+	"recipes/internal/search"
 	"recipes/internal/store"
 )
 
@@ -47,7 +48,7 @@ func testServer(t *testing.T) (*httptest.Server, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(cfg, st, keys, nil)
+	srv, err := NewServer(cfg, st, keys, nil, search.New(st, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +171,35 @@ func TestHomeParentFilterIncludesSubcategories(t *testing.T) {
 	body := getPage(t, newClient(t), ts.URL+"/?cat="+strconv.FormatInt(sup.ID, 10))
 	if !strings.Contains(body, "Борщ субдерево") {
 		t.Error("parent filter did not include subcategory recipe")
+	}
+}
+
+// Characterization of the home search/browse contract that the (upcoming) search
+// service must preserve: a query filters to matching recipes; an empty query
+// browses everything.
+func TestHomeSearchDiscriminatesAndBrowses(t *testing.T) {
+	ts, st := testServer(t)
+	ctx := context.Background()
+	cat, _ := st.GetOrCreateCategory(ctx, "Разное", models.SourceManual)
+	for _, title := range []string{"Борщ московский", "Тирамису классический"} {
+		if _, err := st.CreateRecipe(ctx, store.RecipeInput{
+			Title: title, CategoryID: cat.ID,
+			Ingredients: []models.IngredientBlock{{Items: []string{"что-то"}}},
+			StepsHTML:   "<p>Готовить.</p>",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newClient(t)
+	// Query filters: "борщ" finds only the borscht.
+	hit := getPage(t, c, ts.URL+"/?q=борщ")
+	if !strings.Contains(hit, "Борщ московский") || strings.Contains(hit, "Тирамису классический") {
+		t.Errorf("search did not discriminate: %q", hit)
+	}
+	// Empty query browses: both recipes listed.
+	all := getPage(t, c, ts.URL+"/")
+	if !strings.Contains(all, "Борщ московский") || !strings.Contains(all, "Тирамису классический") {
+		t.Error("empty-query browse did not list all recipes")
 	}
 }
 

@@ -63,6 +63,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS recipes_fts USING fts5(
   tokenize = 'unicode61 remove_diacritics 2'
 );
 
+-- Semantic-search vectors, one per recipe (model-tagged). Derived from recipe
+-- text and fully rebuildable, so it needs no backup; dropped via the FK cascade
+-- when a recipe is deleted. vec is little-endian float32 (dim floats).
+CREATE TABLE IF NOT EXISTS recipe_embeddings (
+  recipe_id  INTEGER PRIMARY KEY REFERENCES recipes(id) ON DELETE CASCADE,
+  model      TEXT NOT NULL,
+  dim        INTEGER NOT NULL,
+  vec        BLOB NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS icloud_accounts (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id      INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,

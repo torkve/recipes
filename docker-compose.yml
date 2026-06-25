@@ -31,7 +31,9 @@ services:
   # `docker compose --profile semantic up`. The model downloads on first boot
   # into the embedder-models volume (rebuildable, no backup needed).
   embedder:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    # cpu-1.5 bundled hf-hub 0.3.2, which fails model download with
+    # "relative URL without a base"; cpu-1.7 (hf-hub >= 0.4) fixes it.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.7
     container_name: recipes-embedder
     restart: unless-stopped
     profiles: ["semantic"]

@@ -3,7 +3,6 @@
   <h1>Вход</h1>
   {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
   <form class="form" method="post" action="/admin/login">
-    {{.CSRFField}}
     <label>Логин
       <input type="text" name="username" value="{{.Username}}" autocomplete="username" autofocus required>
     </label>

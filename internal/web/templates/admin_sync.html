@@ -9,7 +9,6 @@
 
   {{if .Pending2FA}}
   <form class="form" method="post" action="/admin/sync/bind/2fa">
-    {{.CSRFField}}
     <p>Введите код двухфакторной аутентификации, отправленный на ваше устройство Apple.</p>
     <label>Код
       <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus required>
@@ -19,14 +18,12 @@
     </div>
   </form>
   <form class="form" method="post" action="/admin/sync/bind/cancel">
-    {{.CSRFField}}
     <p class="hint">Не пришёл код или хотите начать заново?</p>
     <button class="btn btn-secondary" type="submit">Отменить и начать заново</button>
   </form>
 
   {{else if not .Bound}}
   <form class="form" method="post" action="/admin/sync/bind">
-    {{.CSRFField}}
     <p>Привяжите ваш Apple ID, чтобы синхронизировать рецепты с заметками iCloud.</p>
     <label>Apple ID
       <input type="email" name="apple_id" autocomplete="username" autofocus required>
@@ -41,14 +38,13 @@
   <p>
     Привязан Apple ID: <strong>{{.AppleID}}</strong>
     <form class="inline" method="post" action="/admin/sync/unbind" onsubmit="return confirm('Отвязать аккаунт iCloud?');">
-      {{.CSRFField}}<button class="btn-link btn-danger-link" type="submit">Отвязать</button>
+      <button class="btn-link btn-danger-link" type="submit">Отвязать</button>
     </form>
   </p>
 
   {{if .FolderError}}<p class="error">Не удалось получить список папок: {{.FolderError}}</p>{{end}}
 
   <form class="form" method="post" action="/admin/sync/folder">
-    {{.CSRFField}}
     <label>Папка заметок для синхронизации
       {{if .Folders}}
       <select name="folder">
@@ -63,8 +59,8 @@
 
   {{if .Folder}}
   <div class="sync-actions">
-    <form class="inline" method="post" action="/admin/sync/pull">{{.CSRFField}}<button class="btn" type="submit">Синхронизировать из iCloud</button></form>
-    <form class="inline" method="post" action="/admin/sync/push">{{.CSRFField}}<button class="btn btn-secondary" type="submit">Отправить в iCloud</button></form>
+    <form class="inline" method="post" action="/admin/sync/pull"><button class="btn" type="submit">Синхронизировать из iCloud</button></form>
+    <form class="inline" method="post" action="/admin/sync/push"><button class="btn btn-secondary" type="submit">Отправить в iCloud</button></form>
   </div>
   {{end}}
   {{end}}
@@ -76,7 +72,6 @@
     <li>
       <span>{{.Detail}}</span>
       <form class="inline" method="post" action="/admin/sync/conflicts/{{.ID}}/resolve">
-        {{$.CSRFField}}
         <button class="btn-link" type="submit" name="choice" value="local">Оставить из приложения</button>
         <button class="btn-link" type="submit" name="choice" value="remote">Взять из iCloud</button>
       </form>

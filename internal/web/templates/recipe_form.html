@@ -5,7 +5,6 @@
   {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 
   <form class="form form-wide" method="post" action="{{.FormAction}}" id="recipe-form">
-    {{.CSRFField}}
 
     <label>Название блюда
       <input type="text" name="title" value="{{.RecipeTitle}}" required autofocus>
@@ -58,7 +57,6 @@
 
   {{if .IsEdit}}
   <form class="delete-form" method="post" action="/admin/recipes/{{.RecipeID}}/delete" onsubmit="return confirm('Удалить рецепт безвозвратно?');">
-    {{.CSRFField}}
     <button type="submit" class="btn btn-danger">Удалить рецепт</button>
   </form>
   {{end}}

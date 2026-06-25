@@ -7,12 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/gorilla/csrf"
 )
-
-// csrfFieldName is the form field gorilla/csrf expects the token in.
-const csrfFieldName = "csrf_token"
 
 // logError logs an internal error behind a 500 response.
 func logError(err error) {
@@ -51,8 +46,6 @@ func (s *Server) newPageData(r *http.Request) pageData {
 	return pageData{
 		"SiteName":      s.cfg.SiteName,
 		"User":          currentUser(r),
-		"CSRFField":     csrf.TemplateField(r),
-		"CSRFToken":     csrf.Token(r),
 		"Path":          r.URL.Path,
 		"ICloudEnabled": s.engine != nil,
 	}

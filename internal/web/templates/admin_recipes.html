@@ -21,7 +21,6 @@
         <td class="row-actions">
           <a href="/admin/recipes/{{.ID}}/edit">Изменить</a>
           <form class="inline" method="post" action="/admin/recipes/{{.ID}}/delete" onsubmit="return confirm('Удалить рецепт?');">
-            {{$.CSRFField}}
             <button type="submit" class="btn-link btn-danger-link">Удалить</button>
           </form>
         </td>

@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
   <title>{{if .Title}}{{.Title}} — {{end}}{{.SiteName}}</title>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -22,7 +21,7 @@
             <a class="menu-item" role="menuitem" href="/admin/recipes">Управление рецептами</a>
             <a class="menu-item" role="menuitem" href="/admin/categories">Категории</a>
             {{if .ICloudEnabled}}<a class="menu-item" role="menuitem" href="/admin/sync">iCloud-синхронизация</a>{{end}}
-            <form class="inline menu-item-form" method="post" action="/admin/logout">{{.CSRFField}}<button type="submit" class="menu-item btn-link" role="menuitem">Выйти</button></form>
+            <form class="inline menu-item-form" method="post" action="/admin/logout"><button type="submit" class="menu-item btn-link" role="menuitem">Выйти</button></form>
           </div>
         </div>
       {{else}}

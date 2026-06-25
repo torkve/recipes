@@ -7,16 +7,15 @@ import (
 	"os"
 )
 
-// Keys holds the secret keys used for session cookies and CSRF protection.
-// They are generated once on first start and persisted so that sessions and
-// CSRF tokens survive restarts.
+// Keys holds the secret keys used for session cookies and iCloud blob
+// encryption. They are generated once on first start and persisted so sessions
+// survive restarts. (CSRF protection no longer needs a key — it uses the stdlib
+// net/http.CrossOriginProtection; a legacy "csrf" field in keys.json is ignored.)
 type Keys struct {
 	// SessionAuth authenticates (HMAC) session cookies (64 bytes).
 	SessionAuth []byte `json:"session_auth"`
 	// SessionEnc encrypts session cookies (32 bytes => AES-256).
 	SessionEnc []byte `json:"session_enc"`
-	// CSRF is the 32-byte key for the gorilla/csrf middleware.
-	CSRF []byte `json:"csrf"`
 	// SyncEnc encrypts persisted iCloud session blobs (32 bytes => AES-256-GCM).
 	SyncEnc []byte `json:"sync_enc"`
 }
@@ -31,11 +30,11 @@ func LoadOrCreateKeys(path string) (*Keys, error) {
 		if err := json.Unmarshal(data, &k); err != nil {
 			return nil, fmt.Errorf("auth: parse keys %s: %w", path, err)
 		}
-		if len(k.SessionAuth) == 0 || len(k.SessionEnc) != 32 || len(k.CSRF) != 32 {
+		if len(k.SessionAuth) == 0 || len(k.SessionEnc) != 32 {
 			return nil, fmt.Errorf("auth: keys file %s is malformed", path)
 		}
 		// Backfill SyncEnc for key files created before iCloud sync existed,
-		// without rotating the other (cookie/CSRF) keys.
+		// without rotating the cookie keys.
 		if len(k.SyncEnc) != 32 {
 			k.SyncEnc = make([]byte, 32)
 			if _, err := rand.Read(k.SyncEnc); err != nil {
@@ -72,10 +71,9 @@ func generateKeys() (*Keys, error) {
 	k := &Keys{
 		SessionAuth: make([]byte, 64),
 		SessionEnc:  make([]byte, 32),
-		CSRF:        make([]byte, 32),
 		SyncEnc:     make([]byte, 32),
 	}
-	for _, buf := range [][]byte{k.SessionAuth, k.SessionEnc, k.CSRF, k.SyncEnc} {
+	for _, buf := range [][]byte{k.SessionAuth, k.SessionEnc, k.SyncEnc} {
 		if _, err := rand.Read(buf); err != nil {
 			return nil, fmt.Errorf("auth: generate keys: %w", err)
 		}

@@ -8,9 +8,6 @@
   var tree = document.getElementById("cat-tree");
   if (!tree) return;
 
-  var meta = document.querySelector('meta[name="csrf-token"]');
-  var csrf = meta ? meta.getAttribute("content") : "";
-
   // parentOf maps each category id to its parent id (from data attributes), used
   // to reject dropping a node onto one of its own descendants.
   function parentOf(id) {
@@ -74,11 +71,10 @@
 
     var body = new URLSearchParams();
     body.set("parent_id", parent);
-    body.set("csrf_token", csrf);
     fetch("/admin/categories/" + encodeURIComponent(id) + "/parent", {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": csrf },
+      credentials: "same-origin", // sends Sec-Fetch-Site: same-origin → allowed
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
     }).then(function (r) {
       window.location.href = r.url || "/admin/categories";

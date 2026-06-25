@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/csrf"
 	"github.com/gorilla/sessions"
 
 	"recipes/internal/auth"
@@ -50,30 +49,15 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *not
 		search:    searchSvc,
 	}
 
-	csrfMW := csrf.Protect(
-		keys.CSRF,
-		csrf.Secure(cfg.SecureCookies),
-		csrf.Path("/"),
-		csrf.SameSite(csrf.SameSiteLaxMode),
-		csrf.FieldName(csrfFieldName),
-	)
-
-	s.handler = logging(s.withUser(s.markPlaintext(csrfMW(s.routes()))))
+	// CSRF protection via the stdlib: deny unsafe (non-GET/HEAD/OPTIONS)
+	// cross-origin requests using Sec-Fetch-Site / Origin. It needs no token, no
+	// TLS, and no per-request scheme inspection, so it works the same on plain
+	// HTTP (local) and behind a TLS-terminating proxy (which preserves Host). The
+	// session cookie's SameSite=Lax is the residual defense for header-less
+	// requests. Placed outside withUser so denied requests skip the session load.
+	cop := http.NewCrossOriginProtection()
+	s.handler = logging(cop.Handler(s.withUser(s.routes())))
 	return s, nil
-}
-
-// markPlaintext flags requests as plaintext HTTP for gorilla/csrf when secure
-// cookies are disabled (local/dev over plain HTTP). Without it, csrf enforces a
-// strict Referer check intended for TLS, which rejects ordinary form posts.
-// In production (SecureCookies=true) requests are left unmarked so the full
-// TLS-grade Origin/Referer checks apply.
-func (s *Server) markPlaintext(next http.Handler) http.Handler {
-	if s.cfg.SecureCookies {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
-	})
 }
 
 // Handler returns the fully-wrapped HTTP handler.

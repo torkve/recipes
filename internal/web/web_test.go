@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,8 +66,6 @@ func newClient(t *testing.T) *http.Client {
 	return c
 }
 
-var tokenRE = regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
-
 func getPage(t *testing.T, c *http.Client, url string) string {
 	t.Helper()
 	resp, err := c.Get(url)
@@ -80,20 +77,10 @@ func getPage(t *testing.T, c *http.Client, url string) string {
 	return string(b)
 }
 
-func token(t *testing.T, c *http.Client, url string) string {
-	t.Helper()
-	m := tokenRE.FindStringSubmatch(getPage(t, c, url))
-	if m == nil {
-		t.Fatalf("no csrf token on %s", url)
-	}
-	return m[1]
-}
-
 func login(t *testing.T, c *http.Client, base string) {
 	t.Helper()
-	tok := token(t, c, base+"/admin/login")
 	resp, err := c.PostForm(base+"/admin/login", url.Values{
-		"username": {"admin"}, "password": {"pw"}, "csrf_token": {tok},
+		"username": {"admin"}, "password": {"pw"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -256,11 +243,10 @@ func TestAdminSetCategoryParent(t *testing.T) {
 
 	c := newClient(t)
 	login(t, c, ts.URL)
-	tok := token(t, c, ts.URL+"/admin/categories")
 
 	post := func(id int64, parent string) *http.Response {
 		resp, err := c.PostForm(ts.URL+"/admin/categories/"+strconv.FormatInt(id, 10)+"/parent",
-			url.Values{"parent_id": {parent}, "csrf_token": {tok}})
+			url.Values{"parent_id": {parent}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -341,19 +327,54 @@ func TestScenarioGuestSearch(t *testing.T) {
 
 // Scenario 3: a member adds a recipe in a brand-new category, which then appears
 // in the catalog filter immediately.
+// TestCrossOriginProtection proves the CSRF defense: an authenticated
+// state-changing POST is denied when it looks cross-origin (Sec-Fetch-Site:
+// cross-site) and allowed when same-origin.
+func TestCrossOriginProtection(t *testing.T) {
+	ts, st := testServer(t)
+	cat, err := st.GetOrCreateCategory(context.Background(), "Супы", models.SourceManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newClient(t)
+	login(t, c, ts.URL) // c's jar now holds the session cookie
+
+	target := ts.URL + "/admin/categories/" + strconv.FormatInt(cat.ID, 10) + "/rename"
+	doPost := func(secFetchSite string) int {
+		req, _ := http.NewRequest(http.MethodPost, target,
+			strings.NewReader(url.Values{"name": {"Первые блюда"}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Sec-Fetch-Site", secFetchSite)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// A forged cross-origin request (even with the victim's cookie) is blocked
+	// before the handler runs.
+	if got := doPost("cross-site"); got != http.StatusForbidden {
+		t.Fatalf("cross-site POST: got %d, want 403", got)
+	}
+	// The app's own same-origin form succeeds (303 redirect from the handler).
+	if got := doPost("same-origin"); got != http.StatusSeeOther {
+		t.Fatalf("same-origin POST: got %d, want 303", got)
+	}
+}
+
 func TestScenarioMemberAddsRecipeAndCategory(t *testing.T) {
 	ts, st := testServer(t)
 	c := newClient(t)
 	login(t, c, ts.URL)
 
-	tok := token(t, c, ts.URL+"/admin/recipes/new")
 	resp, err := c.PostForm(ts.URL+"/admin/recipes", url.Values{
 		"title":        {"Тирамису"},
 		"new_category": {"Десерты"},
 		"ing_subtitle": {"Крем"},
 		"ing_items":    {"маскарпоне\nсахар"},
 		"steps_html":   {"<p>Смешать.</p>"},
-		"csrf_token":   {tok},
 	})
 	if err != nil {
 		t.Fatal(err)

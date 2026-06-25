@@ -10,8 +10,6 @@
   var hidden = document.getElementById("steps-html");
   var blocks = document.getElementById("ingredient-blocks");
   var tmpl = document.getElementById("ing-block-template");
-  var meta = document.querySelector('meta[name="csrf-token"]');
-  var csrf = meta ? meta.getAttribute("content") : "";
 
   // --- Ingredient blocks ---------------------------------------------------
   var addBtn = document.getElementById("add-block");
@@ -49,8 +47,7 @@
     fetch("/admin/recipes/upload", {
       method: "POST",
       body: fd,
-      headers: { "X-CSRF-Token": csrf },
-      credentials: "same-origin"
+      credentials: "same-origin" // sends Sec-Fetch-Site: same-origin → allowed
     })
       .then(function (r) {
         if (!r.ok) throw new Error("upload failed");

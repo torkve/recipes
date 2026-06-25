@@ -15,14 +15,12 @@
     <div class="cat-node" draggable="true" data-id="{{.ID}}" data-parent="{{deref .ParentID}}" style="--d:{{.Depth}}">
       <span class="cat-handle" aria-hidden="true" title="Перетащить">⠿</span>
       <form class="inline rename-form" method="post" action="/admin/categories/{{.ID}}/rename">
-        {{$.CSRFField}}
         <input type="text" name="name" value="{{.Name}}" aria-label="Название категории" required>
         <button type="submit" class="btn-link">Сохранить</button>
       </form>
       <span class="cat-count" title="Рецептов">{{.RecipeCount}}</span>
       {{if eq .RecipeCount 0}}
       <form class="inline" method="post" action="/admin/categories/{{.ID}}/delete" onsubmit="return confirm('Удалить категорию «{{.Name}}»?');">
-        {{$.CSRFField}}
         <button type="submit" class="btn-link btn-danger-link">Удалить</button>
       </form>
       {{else}}

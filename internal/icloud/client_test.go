@@ -114,11 +114,17 @@ func mediaRec(name, url string) string {
 // notePageImage is a changes/zone page with one Note whose body has an inline
 // image attachment (att) in a step paragraph.
 func notePageImage(recordName, title, att string) string {
+	return notePageAttach(recordName, title, att, "public.jpeg")
+}
+
+// notePageAttach builds a changes/zone Note page with one body attachment of the
+// given type_uti (e.g. public.jpeg or com.apple.notes.gallery).
+func notePageAttach(recordName, title, att, uti string) string {
 	text := title + "\nШаг ￼ тут\n"
 	runs := []noteRun{
 		{length: len([]rune(title + "\n")), styleType: 0},
 		{length: len([]rune("Шаг ")), styleType: -1},
-		{length: 1, styleType: -1, attachID: att, attachUTI: "public.jpeg"},
+		{length: 1, styleType: -1, attachID: att, attachUTI: uti},
 		{length: len([]rune(" тут\n")), styleType: -1},
 	}
 	blob := base64.StdEncoding.EncodeToString(buildNoteBlob(text, runs))
@@ -127,6 +133,19 @@ func notePageImage(recordName, title, att string) string {
 		`"TitleEncrypted":{"value":%q,"type":"ENCRYPTED_BYTES"},`+
 		`"TextDataEncrypted":{"value":%q,"type":"ENCRYPTED_BYTES"}}}],"syncToken":"t","moreComing":false}]}`,
 		recordName, encTitle, blob)
+}
+
+// galleryRec is a scanned-document gallery Attachment whose MergeableDataEncrypted
+// embeds the given candidate page ids (as ASCII UUIDs).
+func galleryRec(name string, pageIDs ...string) string {
+	blob := "crdt"
+	for _, id := range pageIDs {
+		blob += "\x00" + id
+	}
+	mb := base64.StdEncoding.EncodeToString([]byte(blob))
+	return fmt.Sprintf(`{"recordName":%q,"recordType":"Attachment","fields":{`+
+		`"UTI":{"value":"com.apple.notes.gallery","type":"STRING"},`+
+		`"MergeableDataEncrypted":{"value":%q,"type":"ENCRYPTED_BYTES"}}}`, name, mb)
 }
 
 func emptyZonePage(more bool) string {
@@ -212,11 +231,14 @@ func TestResolveAttachmentURLs(t *testing.T) {
 	}}
 	p := New(&http.Client{Transport: st}, 1)
 
-	got := p.resolveAttachmentURLs(context.Background(), testSession(), []string{"ATT1", "MISSING"})
-	if got["ATT1"] != "https://cvws.example/img1" {
-		t.Fatalf("ATT1 url = %q, want the media asset url", got["ATT1"])
+	pages, pageURL := p.resolveAttachmentURLs(context.Background(), testSession(), []string{"ATT1", "MISSING"})
+	if len(pages["ATT1"]) != 1 || pages["ATT1"][0] != "ATT1" {
+		t.Fatalf("pages[ATT1]=%v want [ATT1]", pages["ATT1"])
 	}
-	if _, ok := got["MISSING"]; ok {
+	if pageURL["ATT1"] != "https://cvws.example/img1" {
+		t.Fatalf("pageURL[ATT1] = %q, want the media asset url", pageURL["ATT1"])
+	}
+	if _, ok := pages["MISSING"]; ok {
 		t.Fatal("unresolved attachment should be absent from the map")
 	}
 	if st.lookupCalls != 2 {
@@ -240,6 +262,48 @@ func TestFetchZoneResolvesInlineImage(t *testing.T) {
 	}
 	if got := notes[0].Images[0]; got.ID != "ATT1" || got.Ref != "https://cvws.example/img1" {
 		t.Fatalf("image not resolved: %+v", got)
+	}
+}
+
+func TestFetchZoneExpandsScannedGallery(t *testing.T) {
+	// The note's body attachment is a gallery; its MergeableData lists one real
+	// page (PAGE1) plus a noise UUID that resolves to nothing and must be dropped.
+	// Page ids are extracted from the gallery's mergeable blob by UUID regex, so
+	// they must be real UUIDs; the gallery/media record names need not be.
+	page := "11111111-1111-1111-1111-111111111111"
+	noise := "99999999-0000-0000-0000-000000000000"
+	st := &stubTransport{
+		zonePages: []string{notePageAttach("N1", "Скан", "GAL1", "com.apple.notes.gallery")},
+		lookupRecs: map[string]string{
+			"GAL1": galleryRec("GAL1", page, noise),
+			page:   attachmentRec(page, "MED1"),
+			"MED1": mediaRec("MED1", "https://cvws.example/scan1"),
+		},
+	}
+	p := New(&http.Client{Transport: st}, 1)
+
+	_, notes, _, err := p.FetchZone(context.Background(), testSession(), "ROOT", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("want 1 note, got %d", len(notes))
+	}
+	// The gallery fanned out to exactly its one resolvable page (noise dropped).
+	if len(notes[0].Images) != 1 || notes[0].Images[0].ID != page ||
+		notes[0].Images[0].Ref != "https://cvws.example/scan1" {
+		t.Fatalf("gallery not expanded to its page: %+v", notes[0].Images)
+	}
+	// The body marker was rewritten from the gallery id to the page id.
+	if !strings.Contains(notes[0].BodyHTML, "@@IMG:"+page+"@@") || strings.Contains(notes[0].BodyHTML, "GAL1") {
+		t.Fatalf("body marker not rewritten to page: %q", notes[0].BodyHTML)
+	}
+
+	// Idempotent: a second resolve yields an identical body.
+	body1 := notes[0].BodyHTML
+	_, notes2, _, _ := p.FetchZone(context.Background(), testSession(), "ROOT", "")
+	if notes2[0].BodyHTML != body1 {
+		t.Fatalf("non-idempotent gallery resolve:\n %q\n %q", body1, notes2[0].BodyHTML)
 	}
 }
 

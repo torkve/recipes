@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"recipes/internal/notesync"
 )
@@ -164,57 +165,122 @@ func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root no
 	}
 
 	// Attachment/Media records are not enumerated by changes/zone; resolve their
-	// download URLs via records/lookup and stamp each image's Ref.
-	attURL := p.resolveAttachmentURLs(ctx, s, attIDs)
+	// download URLs via records/lookup, expanding scanned-document galleries into
+	// their page images, and rewrite each note's markers/images accordingly.
+	pages, pageURL := p.resolveAttachmentURLs(ctx, s, attIDs)
 	for i := range notes {
-		notes[i].Images = resolveImageRefs(notes[i].Images, attURL)
+		notes[i].BodyHTML, notes[i].Images = resolveImageRefs(notes[i].BodyHTML, notes[i].Images, pages, pageURL)
 	}
 	return folders, notes, next, nil
 }
 
-// resolveAttachmentURLs maps each image Attachment record name to its full-image
-// download URL by following Attachment.Media -> Media.Asset.downloadURL via two
-// batched records/lookup rounds. Image resolution is best-effort: lookup errors
-// are logged and the affected images are simply dropped (their @@IMG markers are
+// resolveAttachmentURLs resolves each body image marker to its downloadable page
+// image(s) via records/lookup. A raster image (public.*) resolves to itself; a
+// scanned-document gallery (com.apple.notes.gallery) fans out to its page images,
+// whose ids come from the gallery's MergeableDataEncrypted. It returns two maps:
+// pages[markerID] -> ordered page record names (== [markerID] for a direct image),
+// and pageURL[pageID] -> asset download URL. Resolution is best-effort: lookup
+// errors are logged and unresolved images dropped (their @@IMG markers are
 // stripped on import), never aborting the pull.
-func (p *Provider) resolveAttachmentURLs(ctx context.Context, s *Session, attIDs []string) map[string]string {
-	attURL := map[string]string{}
-	if len(attIDs) == 0 {
-		return attURL
+//
+// The page ids extracted from a gallery blob are an over-approximation, so they
+// are filtered by resolvability: only ids that look up to an Attachment with a
+// Media asset survive (the gallery's own id, device/replica ids fall out).
+func (p *Provider) resolveAttachmentURLs(ctx context.Context, s *Session, markerIDs []string) (pages map[string][]string, pageURL map[string]string) {
+	pages = map[string][]string{}
+	pageURL = map[string]string{}
+	if len(markerIDs) == 0 {
+		return pages, pageURL
 	}
-	atts, err := p.lookupRecords(ctx, s, attIDs)
+	atts, err := p.lookupRecords(ctx, s, markerIDs)
 	if err != nil {
-		log.Printf("icloud: attachment lookup failed, skipping %d image(s): %v", len(attIDs), err)
-		return attURL
+		log.Printf("icloud: attachment lookup failed, skipping %d image(s): %v", len(markerIDs), err)
+		return pages, pageURL
 	}
-	mediaOf := map[string]string{} // attachment recordName -> media recordName
-	var mediaIDs []string
+
+	mediaOf := map[string]string{} // page/image recordName -> media recordName
+	galleryCand := map[string][]string{}
+	var candPageIDs []string
 	for _, a := range atts {
+		if attachmentUTI(a) == galleryUTI {
+			cand := galleryPageIDs([]byte(a.decodedField("MergeableDataEncrypted")))
+			galleryCand[a.RecordName] = cand
+			candPageIDs = append(candPageIDs, cand...)
+			continue
+		}
+		// Direct raster image: it is its own single "page".
 		if m := a.referenceField("Media"); m != "" {
+			pages[a.RecordName] = []string{a.RecordName}
 			mediaOf[a.RecordName] = m
+		}
+	}
+
+	// Resolve gallery pages: keep only candidates that are real page Attachments
+	// (have a Media asset), preserving order.
+	if len(candPageIDs) > 0 {
+		pageAtts, perr := p.lookupRecords(ctx, s, candPageIDs)
+		if perr != nil {
+			log.Printf("icloud: gallery page lookup failed: %v", perr)
+		} else {
+			pageMedia := map[string]string{}
+			for _, pa := range pageAtts {
+				if m := pa.referenceField("Media"); m != "" {
+					pageMedia[pa.RecordName] = m
+				}
+			}
+			for gal, cand := range galleryCand {
+				var kept []string
+				for _, pid := range cand {
+					if m, ok := pageMedia[pid]; ok {
+						kept = append(kept, pid)
+						mediaOf[pid] = m
+					}
+				}
+				if len(kept) > 0 {
+					pages[gal] = kept
+				}
+			}
+		}
+	}
+
+	// Resolve media -> asset download URL (deduped).
+	var mediaIDs []string
+	seen := map[string]bool{}
+	for _, m := range mediaOf {
+		if !seen[m] {
+			seen[m] = true
 			mediaIDs = append(mediaIDs, m)
 		}
 	}
 	if len(mediaIDs) == 0 {
-		return attURL
+		return pages, pageURL
 	}
 	medias, err := p.lookupRecords(ctx, s, mediaIDs)
 	if err != nil {
 		log.Printf("icloud: media lookup failed, skipping %d image(s): %v", len(mediaIDs), err)
-		return attURL
+		return pages, pageURL
 	}
 	mediaURL := map[string]string{}
-	for _, m := range medias {
-		if url, _ := m.assetField("Asset"); url != "" {
-			mediaURL[m.RecordName] = url
+	for _, md := range medias {
+		if url, _ := md.assetField("Asset"); url != "" {
+			mediaURL[md.RecordName] = url
 		}
 	}
-	for att, media := range mediaOf {
+	for page, media := range mediaOf {
 		if url, ok := mediaURL[media]; ok {
-			attURL[att] = url
+			pageURL[page] = url
 		}
 	}
-	return attURL
+	return pages, pageURL
+}
+
+// attachmentUTI returns an Attachment's type identifier (plaintext UTI field, or
+// the decrypted UTIEncrypted fallback).
+func attachmentUTI(a ckRecord) string {
+	if u := a.stringField("UTI"); u != "" {
+		return u
+	}
+	return a.decodedField("UTIEncrypted")
 }
 
 // lookupRecords fetches records by name via records/lookup, chunked to stay under
@@ -244,18 +310,29 @@ func (p *Provider) lookupRecords(ctx context.Context, s *Session, names []string
 	return out, nil
 }
 
-// resolveImageRefs stamps each image's download URL from the attachment map,
-// dropping images whose asset could not be resolved (their @@IMG marker is then
-// stripped from the body on import).
-func resolveImageRefs(imgs []notesync.NoteImage, attURL map[string]string) []notesync.NoteImage {
+// resolveImageRefs rewrites a note's body markers and image list from the
+// resolved pages. Each marker @@IMG:markerID@@ is replaced by the newline-joined
+// per-page markers @@IMG:pageID@@ (unchanged for a direct image, fanned out for a
+// gallery), and the returned images carry each page's download Ref. A marker with
+// no resolvable page is left in place, to be stripped on import.
+func resolveImageRefs(body string, imgs []notesync.NoteImage, pages map[string][]string, pageURL map[string]string) (string, []notesync.NoteImage) {
 	var out []notesync.NoteImage
 	for _, img := range imgs {
-		if url, ok := attURL[img.ID]; ok {
-			img.Ref = url
-			out = append(out, img)
+		var repl []string
+		for _, pid := range pages[img.ID] {
+			url := pageURL[pid]
+			if url == "" {
+				continue
+			}
+			repl = append(repl, imgToken(pid))
+			out = append(out, notesync.NoteImage{ID: pid, Ref: url})
 		}
+		if len(repl) == 0 {
+			continue // unresolved: leave the original marker for the engine to strip
+		}
+		body = strings.ReplaceAll(body, imgToken(img.ID), strings.Join(repl, "\n"))
 	}
-	return out
+	return body, out
 }
 
 // FetchImage downloads one image's bytes from its resolved Ref (a CloudKit asset

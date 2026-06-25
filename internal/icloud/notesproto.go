@@ -20,6 +20,17 @@ import (
 // A style_type of 103 marks a checklist paragraph.
 const checklistStyleType = 103
 
+// galleryUTI is the type_uti of a scanned-document attachment. It contains child
+// page attachments (each a raster image) rather than a single image; the provider
+// expands it to its pages.
+const galleryUTI = "com.apple.notes.gallery"
+
+// isInlineImageUTI reports whether a note attachment should be imported as an
+// image: a raster image (public.*) or a scanned-document gallery.
+func isInlineImageUTI(uti string) bool {
+	return strings.HasPrefix(uti, "public.") || uti == galleryUTI
+}
+
 // imgToken marks an inline image in the steps text; the sync engine substitutes
 // it for the re-hosted <img> tag (and the hash projection strips it). The id is
 // the image Attachment record's name, resolved to a download URL by the provider.
@@ -147,11 +158,12 @@ func parseNoteBody(blob []byte) (ingredientBlocks [][]string, steps string, imag
 		if ps := pbBytes(run, 2); ps != nil {
 			style = int(pbVarint(ps, 1))
 		}
-		// attachment_info (field 12): only image attachments (public.* UTIs) are
-		// inlined; tables/hashtags/drawings are left to be stripped out.
+		// attachment_info (field 12): only image attachments are inlined
+		// (raster images and scanned-document galleries); tables/hashtags/
+		// drawings are left to be stripped out.
 		var attachID string
 		if ai := pbBytes(run, 12); ai != nil {
-			if uti := string(pbBytes(ai, 2)); strings.HasPrefix(uti, "public.") {
+			if isInlineImageUTI(string(pbBytes(ai, 2))) {
 				attachID = string(pbBytes(ai, 1))
 			}
 		}

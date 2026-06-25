@@ -178,6 +178,28 @@ func TestParseNoteBodyIngredientImagePreserved(t *testing.T) {
 	}
 }
 
+// A scanned-document (gallery) attachment in the body must emit a marker just
+// like a raster image (resolution to its pages happens later, in the provider).
+func TestParseNoteBodyGalleryMarker(t *testing.T) {
+	text := "Скан\nстраница ￼\n"
+	runs := []noteRun{
+		{length: len([]rune("Скан\n")), styleType: 0},
+		{length: len([]rune("страница ")), styleType: -1},
+		{length: 1, styleType: -1, attachID: "GAL-1", attachUTI: "com.apple.notes.gallery"},
+		{length: len([]rune("\n")), styleType: -1},
+	}
+	_, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if !reflect.DeepEqual(imgs, []string{"GAL-1"}) {
+		t.Fatalf("imageIDs=%v want [GAL-1]", imgs)
+	}
+	if !strings.Contains(steps, "@@IMG:GAL-1@@") {
+		t.Fatalf("gallery marker not emitted: %q", steps)
+	}
+}
+
 func TestParseNoteBodyInvalid(t *testing.T) {
 	if _, _, _, ok := parseNoteBody([]byte("not gzip")); ok {
 		t.Fatal("expected parse failure on garbage")

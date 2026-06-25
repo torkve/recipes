@@ -98,7 +98,7 @@ func TestSearchHybridSurfacesSemanticNeighbour(t *testing.T) {
 	seed(t, st, "Борщ", cat.ID, "fake", []float32{0, 0, 1})       // far
 
 	emb := &fakeEmbedder{vec: []float32{1, 0, 0}}
-	svc := New(st, emb)
+	svc := New(st, emb, 0)
 	if err := svc.RefreshSnapshot(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -119,13 +119,39 @@ func TestSearchHybridSurfacesSemanticNeighbour(t *testing.T) {
 	}
 }
 
+func TestSearchThresholdDropsWeakHits(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	cat, _ := st.GetOrCreateCategory(ctx, "Завтрак", models.SourceManual)
+	seed(t, st, "Блины", cat.ID, "fake", []float32{1, 0, 0})
+	seed(t, st, "Оладьи", cat.ID, "fake", []float32{0.9, 0.1, 0}) // cosine ≈ 0.994 to the query
+	seed(t, st, "Борщ", cat.ID, "fake", []float32{0, 0, 1})       // cosine 0 — unrelated
+
+	emb := &fakeEmbedder{vec: []float32{1, 0, 0}}
+	svc := New(st, emb, 0.5) // gate out weak matches
+	if err := svc.RefreshSnapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Search(ctx, "блины", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The strong neighbour passes the gate; the unrelated recipe is dropped.
+	if !contains(res, "Оладьи") {
+		t.Errorf("strong semantic neighbour should survive the threshold: %v", titles(res))
+	}
+	if contains(res, "Борщ") {
+		t.Errorf("below-threshold hit should be dropped: %v", titles(res))
+	}
+}
+
 func TestSearchEmptyQueryBypassesSemantic(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	cat, _ := st.GetOrCreateCategory(ctx, "Завтрак", models.SourceManual)
 	seed(t, st, "Блины", cat.ID, "fake", []float32{1, 0, 0})
 	emb := &fakeEmbedder{vec: []float32{1, 0, 0}}
-	svc := New(st, emb)
+	svc := New(st, emb, 0)
 	_ = svc.RefreshSnapshot(ctx)
 
 	res, err := svc.Search(ctx, "", nil) // browse
@@ -147,7 +173,7 @@ func TestSearchEmbedErrorFallsBackToLexical(t *testing.T) {
 	seed(t, st, "Блины", cat.ID, "fake", []float32{1, 0, 0})
 	seed(t, st, "Оладьи", cat.ID, "fake", []float32{1, 0, 0})
 	emb := &fakeEmbedder{err: errors.New("down")}
-	svc := New(st, emb)
+	svc := New(st, emb, 0)
 	_ = svc.RefreshSnapshot(ctx)
 
 	res, err := svc.Search(ctx, "блины", nil)
@@ -175,7 +201,7 @@ func TestWorkerBackfillIndexesAndRefreshes(t *testing.T) {
 		}
 	}
 	emb := &fakeEmbedder{vec: []float32{1, 0, 0}}
-	svc := New(st, emb)
+	svc := New(st, emb, 0)
 	w := NewWorker(svc, st, emb, time.Minute)
 
 	w.tick(ctx) // one backfill pass + snapshot refresh
@@ -197,7 +223,7 @@ func TestWorkerBackfillIndexesAndRefreshes(t *testing.T) {
 		t.Fatal(err)
 	}
 	emb2 := &fakeEmbedder{vec: []float32{1, 0, 0}}
-	w2 := NewWorker(New(st2, emb2), st2, emb2, time.Minute)
+	w2 := NewWorker(New(st2, emb2, 0), st2, emb2, time.Minute)
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	w2.backfill(cancelled)
@@ -214,7 +240,7 @@ func TestSearchSemanticRespectsCategoryFilter(t *testing.T) {
 	seed(t, st, "Оладьи", breakfast.ID, "fake", []float32{1, 0, 0})
 	seed(t, st, "Похлёбка", soups.ID, "fake", []float32{1, 0, 0}) // identical vector, different category
 	emb := &fakeEmbedder{vec: []float32{1, 0, 0}}
-	svc := New(st, emb)
+	svc := New(st, emb, 0)
 	_ = svc.RefreshSnapshot(ctx)
 
 	// Restrict to the breakfast category: the soup must not appear via the

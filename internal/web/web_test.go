@@ -48,7 +48,7 @@ func testServer(t *testing.T) (*httptest.Server, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := NewServer(cfg, st, keys, nil, search.New(st, nil))
+	srv, err := NewServer(cfg, st, keys, nil, search.New(st, nil, 0))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,6 +55,10 @@ type Config struct {
 	EmbedDim int
 	// EmbedBackfillMinutes is how often the backfill worker indexes new recipes.
 	EmbedBackfillMinutes int
+	// EmbedMinScore is the minimum cosine similarity for a semantic hit to count;
+	// the main relevance knob. Raise toward 0.84–0.88 if results are too broad,
+	// lower if too few. e5 cosine scores cluster high, so small changes matter.
+	EmbedMinScore float64
 }
 
 // DBPath returns the sqlite database file path.
@@ -86,6 +90,7 @@ func Load() (*Config, error) {
 		EmbedModel:           env("RECIPES_EMBED_MODEL", "intfloat/multilingual-e5-small"),
 		EmbedDim:             envInt("RECIPES_EMBED_DIM", 384),
 		EmbedBackfillMinutes: envInt("RECIPES_EMBED_BACKFILL_MINUTES", 5),
+		EmbedMinScore:        envFloat("RECIPES_EMBED_MIN_SCORE", 0.80),
 	}
 
 	if c.Addr == "" {
@@ -126,4 +131,16 @@ func envBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func envFloat(key string, def float64) float64 {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }

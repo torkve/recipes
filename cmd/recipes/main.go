@@ -87,7 +87,7 @@ func run() error {
 		embedder = embClient
 		log.Printf("recipes: semantic search enabled (model %s)", cfg.EmbedModel)
 	}
-	searchSvc := search.New(st, embedder)
+	searchSvc := search.New(st, embedder, cfg.EmbedMinScore)
 
 	srvHandler, err := web.NewServer(cfg, st, keys, engine, searchSvc)
 	if err != nil {

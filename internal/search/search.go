@@ -39,15 +39,17 @@ type snapshot struct {
 
 // Service runs queries against the store, optionally enriched by semantic search.
 type Service struct {
-	store *store.Store
-	emb   Embedder // nil => lexical-only
-	snap  atomic.Pointer[snapshot]
+	store    *store.Store
+	emb      Embedder // nil => lexical-only
+	minScore float64  // minimum cosine similarity for a semantic hit
+	snap     atomic.Pointer[snapshot]
 }
 
 // New builds a Service. Pass a nil Embedder (not a nil *embed.Client wrapped in
-// the interface) to run lexical-only.
-func New(st *store.Store, emb Embedder) *Service {
-	return &Service{store: st, emb: emb}
+// the interface) to run lexical-only. minScore is the minimum cosine similarity a
+// semantic hit must clear (0 keeps all scored hits).
+func New(st *store.Store, emb Embedder, minScore float64) *Service {
+	return &Service{store: st, emb: emb, minScore: minScore}
 }
 
 // RefreshSnapshot reloads the semantic index for the configured model into
@@ -117,7 +119,11 @@ func (s *Service) semanticIDs(ctx context.Context, query string, categoryIDs []i
 		if allow != nil && !allow[e.CategoryID] {
 			continue
 		}
-		hits = append(hits, scored{e.ID, cosine(qv, e.Vec)})
+		score := cosine(qv, e.Vec)
+		if score < s.minScore {
+			continue // not similar enough to count as a semantic match
+		}
+		hits = append(hits, scored{e.ID, score})
 	}
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].score != hits[j].score {

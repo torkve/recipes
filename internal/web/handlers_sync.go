@@ -104,7 +104,7 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		data["Pending2FA"] = true
 	}
 
-	if conflicts, cerr := s.engine.Conflicts(ctx); cerr == nil {
+	if conflicts, cerr := s.engine.ConflictsDetailed(ctx, uid); cerr == nil {
 		data["Conflicts"] = conflicts
 	}
 

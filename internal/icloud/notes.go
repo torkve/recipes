@@ -1,7 +1,12 @@
 package icloud
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"recipes/internal/notesync"
 )
@@ -73,49 +78,95 @@ func recordToNote(r ckRecord) notesync.Note {
 	return n
 }
 
-// noteToRecord builds a CloudKit record for pushing a note. The body is written
-// as a plain-text field and the title as the title field; checklists are
-// appended to the body as lines (the encoded checklist format is not written
-// here). The operation type is chosen by the caller via the record name/etag.
-func noteToRecord(n notesync.Note) ckRecord {
+// noteToRecord builds a CloudKit Note record for pushing, matching the schema the
+// iCloud Notes web app uses (verified against a captured save): server-encrypted
+// ENCRYPTED_BYTES carrying base64 plaintext for the title/snippet, the body as
+// base64(zlib(NoteStoreProto)), and folder membership as a REFERENCE_LIST (plus a
+// singular Folder + a top-level parent). Fields are sent value-only (no type). The
+// caller picks create vs update via the note id/etag: an empty id is a create
+// (recordName/recordChangeTag are omitted; the server mints the id via
+// createShortGUID).
+func noteToRecord(n notesync.Note) (ckRecord, error) {
+	body, err := encodeMergeableNoteBody(n.Title, n.Checklists, n.BodyHTML)
+	if err != nil {
+		return ckRecord{}, err
+	}
+	now := time.Now().UnixMilli()
 	fields := map[string]ckField{
-		"title": stringValueField(n.Title),
-		"body":  stringValueField(renderNoteBody(n)),
+		"TitleEncrypted":              encryptedBytesField([]byte(n.Title)),
+		"SnippetEncrypted":            encryptedBytesField([]byte(noteSnippet(n))),
+		"TextDataEncrypted":           encryptedBytesField(body),
+		"CreationDate":                int64Field(now),
+		"ModificationDate":            int64Field(now),
+		"TextDataAsset":               {},
+		"FirstAttachmentThumbnail":    {},
+		"FirstAttachmentUTIEncrypted": {},
+	}
+	// A note is identified by a client-chosen UUID recordName (matching the web app);
+	// for a create (no id yet) we mint one. Updates are done as delete+create, so the
+	// create path always mints a fresh id.
+	recordName := string(n.ID)
+	if recordName == "" {
+		recordName = uuid.NewString()
 	}
 	rec := ckRecord{
-		RecordName:      string(n.ID),
+		RecordName:      recordName,
 		RecordType:      recordTypeNote,
 		RecordChangeTag: string(n.Etag),
 		Fields:          fields,
 		ZoneID:          ckZoneID{ZoneName: notesZone},
+		CreateShortGUID: true,
 	}
 	if n.FolderID != "" {
-		fields["Folders"] = referenceValueField(string(n.FolderID))
+		fields["Folders"] = folderRefListField(string(n.FolderID))
+		fields["Folder"] = folderRefField(string(n.FolderID))
+		rec.Parent = &ckRef{RecordName: string(n.FolderID)}
 	}
-	return rec
+	return rec, nil
 }
 
-// renderNoteBody flattens a note's body and checklists into plain text for the
-// push body field.
-func renderNoteBody(n notesync.Note) string {
-	body := n.BodyHTML
-	for _, cl := range n.Checklists {
-		for _, item := range cl {
-			body += "\n- " + item
-		}
+// int64Field sends a numeric value (CloudKit INT64/TIMESTAMP), value-only.
+func int64Field(v int64) ckField {
+	b, _ := json.Marshal(v)
+	return ckField{Value: b}
+}
+
+// noteSnippet builds the short list-preview text for SnippetEncrypted: the title
+// and the first body line, capped to a sane length.
+func noteSnippet(n notesync.Note) string {
+	s := strings.TrimSpace(n.Title)
+	if first := strings.TrimSpace(strings.SplitN(n.BodyHTML, "\n", 2)[0]); first != "" {
+		s = strings.TrimSpace(s + " " + first)
 	}
-	return body
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:120])
+	}
+	return s
 }
 
-func stringValueField(s string) ckField {
-	v, _ := json.Marshal(s)
-	return ckField{Value: v, Type: "STRING"}
+// encryptedBytesField sends an ENCRYPTED_BYTES value: base64 of the plaintext/blob.
+// iCloud encrypts it server-side, so no client-side crypto is needed.
+func encryptedBytesField(b []byte) ckField {
+	v, _ := json.Marshal(base64.StdEncoding.EncodeToString(b))
+	return ckField{Value: v}
 }
 
-func referenceValueField(recordName string) ckField {
-	v, _ := json.Marshal(map[string]any{
+// folderRef builds a folder-membership reference. ownerRecordName is left to the
+// server to infer (private DB); action VALIDATE matches the web app.
+func folderRef(recordName string) map[string]any {
+	return map[string]any{
 		"recordName": recordName,
-		"action":     "DELETE_SELF",
-	})
-	return ckField{Value: v, Type: "REFERENCE"}
+		"action":     "VALIDATE",
+		"zoneID":     map[string]string{"zoneName": notesZone},
+	}
+}
+
+func folderRefField(recordName string) ckField {
+	v, _ := json.Marshal(folderRef(recordName))
+	return ckField{Value: v}
+}
+
+func folderRefListField(recordName string) ckField {
+	v, _ := json.Marshal([]any{folderRef(recordName)})
+	return ckField{Value: v}
 }

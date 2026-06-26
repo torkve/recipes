@@ -365,31 +365,54 @@ func (p *Provider) PushNote(ctx context.Context, sess notesync.Session, n notesy
 	if !ok {
 		return notesync.Note{}, errBadSession
 	}
-	op := "create"
+	// Modern Notes renders the body from the mergeable/CRDT structure and gates
+	// updates on a version vector we don't maintain, so an in-place update doesn't
+	// propagate. Instead a linked note is REPLACED: atomically delete the old record
+	// (etag-guarded, so a concurrent device edit surfaces as a conflict) and create a
+	// fresh one. A new (unlinked) note is a single create.
+	var ops []modifyOp
 	if n.ID != "" {
-		op = "update"
-		n.Etag = expectedEtag
+		ops = append(ops, modifyOp{OperationType: "delete", Record: ckRecord{
+			RecordName:      string(n.ID),
+			RecordType:      recordTypeNote,
+			RecordChangeTag: string(expectedEtag),
+			ZoneID:          ckZoneID{ZoneName: notesZone},
+		}})
+		n.ID = "" // force a fresh-UUID create
+		n.Etag = ""
 	}
-	rec := noteToRecord(n)
-	body, err := modifyBody([]modifyOp{{OperationType: op, Record: rec}})
+	rec, err := noteToRecord(n)
 	if err != nil {
 		return notesync.Note{}, err
 	}
-	respBody, err := p.ckPost(ctx, s, "records/modify", body)
+	ops = append(ops, modifyOp{OperationType: "create", Record: rec})
+
+	body, err := modifyBody(ops)
 	if err != nil {
 		return notesync.Note{}, err
 	}
+	respBody, postErr := p.ckPost(ctx, s, "records/modify", body)
+	// An atomic batch that fails comes back as HTTP 400 (ckPost errors) with the
+	// culprit record's CONFLICT in the body, so check the body for a conflict before
+	// surfacing the transport error.
 	recs, err := parseRecords(respBody)
 	if errors.Is(err, errEtagConflict) {
 		return notesync.Note{}, notesync.ErrEtagConflict
 	}
+	if postErr != nil {
+		return notesync.Note{}, postErr
+	}
 	if err != nil {
 		return notesync.Note{}, err
 	}
-	if len(recs) == 0 {
-		return notesync.Note{}, fmt.Errorf("icloud: modify returned no records")
+	// Return the newly-created note (id/etag) so the engine re-links the recipe; the
+	// response may also echo the deleted record, so match by the created recordName.
+	for _, r := range recs {
+		if r.RecordName == rec.RecordName {
+			return recordToNote(r), nil
+		}
 	}
-	return recordToNote(recs[0]), nil
+	return notesync.Note{}, fmt.Errorf("icloud: modify did not return the created note")
 }
 
 // EnsureFolder finds a folder by name under parent, creating it if absent.
@@ -412,12 +435,14 @@ func (p *Provider) EnsureFolder(ctx context.Context, sess notesync.Session, pare
 	rec := ckRecord{
 		RecordType: recordTypeFolder,
 		Fields: map[string]ckField{
-			"title": stringValueField(name),
+			"TitleEncrypted": encryptedBytesField([]byte(name)),
 		},
-		ZoneID: ckZoneID{ZoneName: notesZone},
+		ZoneID:          ckZoneID{ZoneName: notesZone},
+		CreateShortGUID: true,
 	}
 	if parent != "" {
-		rec.Fields["parent"] = referenceValueField(string(parent))
+		rec.Fields["ParentFolder"] = folderRefField(string(parent))
+		rec.Parent = &ckRef{RecordName: string(parent)}
 	}
 	body, err := modifyBody([]modifyOp{{OperationType: "create", Record: rec}})
 	if err != nil {

@@ -21,18 +21,32 @@ const (
 	ckClientMasteringNumber = "2622Build18"
 )
 
-// ckRecord is a generic CloudKit record.
+// ckRecord is a generic CloudKit record. The omitempty fields are write-only
+// (records/modify): a create omits recordName/recordChangeTag, and notes carry a
+// parent + createShortGUID. Reads ignore them.
 type ckRecord struct {
-	RecordName      string             `json:"recordName"`
+	RecordName      string             `json:"recordName,omitempty"`
 	RecordType      string             `json:"recordType"`
-	RecordChangeTag string             `json:"recordChangeTag"`
+	RecordChangeTag string             `json:"recordChangeTag,omitempty"`
 	Fields          map[string]ckField `json:"fields"`
 	ZoneID          ckZoneID           `json:"zoneID,omitempty"`
+	Parent          *ckRef             `json:"parent,omitempty"`
+	CreateShortGUID bool               `json:"createShortGUID,omitempty"`
 }
 
+// ckRef is a bare record reference (recordName only), used for a record's parent.
+type ckRef struct {
+	RecordName string `json:"recordName"`
+}
+
+// ckField is a CloudKit field value. On write the type is omitted — the iCloud web
+// app sends value-only and the server infers the type from the zone schema (sending
+// a wrong type is rejected).
 type ckField struct {
-	Value json.RawMessage `json:"value"`
-	Type  string          `json:"type"`
+	// Value is omitempty so an empty ckField{} marshals to {} — the iCloud web app
+	// sends placeholder note fields (TextDataAsset, FirstAttachment*) as empty objects.
+	Value json.RawMessage `json:"value,omitempty"`
+	Type  string          `json:"type,omitempty"`
 }
 
 type ckZoneID struct {
@@ -175,15 +189,25 @@ func parseRecords(body []byte) ([]ckRecord, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("icloud: parse records: %w", err)
 	}
+	// Scan all records: a CONFLICT anywhere takes priority (an atomic batch reports
+	// it on the culprit record while siblings carry ATOMIC_ERROR), so the engine can
+	// record a resolvable conflict instead of aborting the whole push.
 	out := make([]ckRecord, 0, len(r.Records))
+	var firstErr error
 	for _, rec := range r.Records {
 		if rec.ServerErrorCode != "" {
 			if rec.ServerErrorCode == "CONFLICT" {
 				return nil, errEtagConflict
 			}
-			return nil, fmt.Errorf("icloud: record error %s: %s", rec.ServerErrorCode, rec.Reason)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("icloud: record error %s: %s", rec.ServerErrorCode, rec.Reason)
+			}
+			continue
 		}
 		out = append(out, rec.ckRecord)
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return out, nil
 }
@@ -225,11 +249,14 @@ type modifyOp struct {
 	Record        ckRecord `json:"record"`
 }
 
-// modifyBody builds a records/modify request body (pure).
+// modifyBody builds a records/modify request body (pure). Operations are atomic so
+// a delete+create note replacement is all-or-nothing (a conflicting delete must not
+// leave a duplicate created note behind).
 func modifyBody(ops []modifyOp) ([]byte, error) {
 	body := map[string]any{
 		"zoneID":     map[string]string{"zoneName": notesZone},
 		"operations": ops,
+		"atomic":     true,
 	}
 	return json.Marshal(body)
 }

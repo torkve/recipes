@@ -90,18 +90,21 @@ func TestPushClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("etag conflict is recorded, not overwritten", func(t *testing.T) {
+	t.Run("genuine remote change is recorded as a conflict", func(t *testing.T) {
 		eng, st, fp, uid := newTestEngine(t)
 		mustBind(t, eng, uid)
 		id := newPushedRecipe(t, eng, st, uid, "Окрошка", "<p>Старый текст.</p>")
 		rec, _ := st.GetRecipe(ctx, id)
+		// The note changed on another device since our last sync...
+		fp.notes = []Note{{ID: NoteID(*rec.ICloudNoteID), Etag: "live", Title: "Окрошка",
+			Checklists: [][]string{{"соль"}}, BodyHTML: "<p>Изменено в iCloud.</p>"}}
+		// ...and locally too.
 		in := recipeInput("Окрошка", rec.CategoryID, "<p>Новый текст.</p>", uid)
 		in.ICloudNoteID = rec.ICloudNoteID
 		in.ICloudEtag = rec.ICloudEtag
 		if err := st.UpdateRecipe(ctx, id, in); err != nil {
 			t.Fatal(err)
 		}
-		fp.pushConflict = true
 		rep, err := eng.PushUser(ctx, uid)
 		if err != nil {
 			t.Fatal(err)
@@ -112,6 +115,77 @@ func TestPushClassification(t *testing.T) {
 		conflicts, _ := eng.Conflicts(ctx)
 		if len(conflicts) != 1 || conflicts[0].Kind != models.ConflictBothChanged {
 			t.Fatalf("expected both_changed conflict, got %+v", conflicts)
+		}
+	})
+
+	// Regression: a stale stored etag with UNCHANGED remote content must replace, not
+	// falsely conflict (the bug this work fixes).
+	t.Run("unchanged remote replaces without conflict", func(t *testing.T) {
+		eng, st, fp, uid := newTestEngine(t)
+		mustBind(t, eng, uid)
+		id := newPushedRecipe(t, eng, st, uid, "Борщ", "<p>Варить.</p>")
+		rec, _ := st.GetRecipe(ctx, id)
+		fp.notes = []Note{{ID: NoteID(*rec.ICloudNoteID), Etag: "drifted", Title: "Борщ",
+			Checklists: [][]string{{"соль"}}, BodyHTML: "<p>Варить.</p>"}}
+		in := recipeInput("Борщ", rec.CategoryID, "<p>Варить два часа.</p>", uid)
+		in.ICloudNoteID = rec.ICloudNoteID
+		in.ICloudEtag = rec.ICloudEtag
+		if err := st.UpdateRecipe(ctx, id, in); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := eng.PushUser(ctx, uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Conflicts != 0 || rep.Updated != 1 {
+			t.Fatalf("unchanged-remote push: %+v want Updated=1 Conflicts=0", rep)
+		}
+	})
+
+	t.Run("vanished remote note is recreated, not a conflict", func(t *testing.T) {
+		eng, st, fp, uid := newTestEngine(t)
+		mustBind(t, eng, uid)
+		id := newPushedRecipe(t, eng, st, uid, "Плов", "<p>Шаг.</p>")
+		rec, _ := st.GetRecipe(ctx, id)
+		fp.notes = nil // the linked note is gone from iCloud
+		in := recipeInput("Плов", rec.CategoryID, "<p>Шаг два.</p>", uid)
+		in.ICloudNoteID = rec.ICloudNoteID
+		in.ICloudEtag = rec.ICloudEtag
+		if err := st.UpdateRecipe(ctx, id, in); err != nil {
+			t.Fatal(err)
+		}
+		before := fp.pushCount
+		rep, err := eng.PushUser(ctx, uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Conflicts != 0 || fp.pushCount != before+1 {
+			t.Fatalf("vanished push: %+v pushCount %d->%d, want recreate + no conflict", rep, before, fp.pushCount)
+		}
+	})
+
+	t.Run("etag conflict during replace is recorded (TOCTOU backstop)", func(t *testing.T) {
+		eng, st, fp, uid := newTestEngine(t)
+		mustBind(t, eng, uid)
+		id := newPushedRecipe(t, eng, st, uid, "Суп", "<p>Старо.</p>")
+		rec, _ := st.GetRecipe(ctx, id)
+		// Remote present and unchanged (hash gate passes), but the delete races a
+		// remote edit and PushNote reports an etag conflict.
+		fp.notes = []Note{{ID: NoteID(*rec.ICloudNoteID), Etag: "e", Title: "Суп",
+			Checklists: [][]string{{"соль"}}, BodyHTML: "<p>Старо.</p>"}}
+		in := recipeInput("Суп", rec.CategoryID, "<p>Ново.</p>", uid)
+		in.ICloudNoteID = rec.ICloudNoteID
+		in.ICloudEtag = rec.ICloudEtag
+		if err := st.UpdateRecipe(ctx, id, in); err != nil {
+			t.Fatal(err)
+		}
+		fp.pushConflict = true
+		rep, err := eng.PushUser(ctx, uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Conflicts != 1 {
+			t.Fatalf("TOCTOU push: %+v want Conflicts=1", rep)
 		}
 	})
 }

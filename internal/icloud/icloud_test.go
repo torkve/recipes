@@ -2,6 +2,7 @@ package icloud
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -172,13 +173,55 @@ func TestSessionRoundTrip(t *testing.T) {
 }
 
 func TestNoteToRecordRoundTrip(t *testing.T) {
-	n := notesync.Note{ID: "N1", FolderID: "F1", Title: "Борщ",
+	n := notesync.Note{ID: "N1", Etag: "e1", FolderID: "F1", Title: "Борщ",
 		BodyHTML: "Варить", Checklists: [][]string{{"свёкла"}}}
-	rec := noteToRecord(n)
-	if rec.RecordName != "N1" || rec.stringField("title") != "Борщ" {
-		t.Fatalf("bad record: %+v", rec)
+	rec, err := noteToRecord(n)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if rec.referenceField("Folders") != "F1" {
-		t.Fatalf("bad folder ref: %+v", rec.Fields["Folders"])
+	if rec.RecordName != "N1" || rec.RecordChangeTag != "e1" || rec.RecordType != recordTypeNote {
+		t.Fatalf("bad record envelope: %+v", rec)
+	}
+	if !rec.CreateShortGUID {
+		t.Fatal("createShortGUID not set")
+	}
+	// Title is base64 plaintext under ENCRYPTED_BYTES (no type sent).
+	if rec.decodedField("TitleEncrypted") != "Борщ" {
+		t.Fatalf("title = %q", rec.decodedField("TitleEncrypted"))
+	}
+	if rec.Fields["TitleEncrypted"].Type != "" {
+		t.Fatalf("write field must omit type, got %q", rec.Fields["TitleEncrypted"].Type)
+	}
+	// Folder membership: singular Folder ref + a REFERENCE_LIST Folders + parent.
+	if rec.referenceField("Folder") != "F1" {
+		t.Fatalf("bad singular Folder ref: %+v", rec.Fields["Folder"])
+	}
+	if rec.Parent == nil || rec.Parent.RecordName != "F1" {
+		t.Fatalf("bad parent: %+v", rec.Parent)
+	}
+	var list []struct {
+		RecordName string `json:"recordName"`
+		Action     string `json:"action"`
+	}
+	if err := json.Unmarshal(rec.Fields["Folders"].Value, &list); err != nil {
+		t.Fatalf("Folders not a list: %v", err)
+	}
+	if len(list) != 1 || list[0].RecordName != "F1" || list[0].Action != "VALIDATE" {
+		t.Fatalf("bad Folders list: %+v", list)
+	}
+	// Body is base64(zlib(mergeable note proto)) and parses back to the checklist + steps.
+	blocks, steps, ok := parseMergeableNoteBody([]byte(rec.decodedField("TextDataEncrypted")))
+	if !ok {
+		t.Fatal("TextDataEncrypted did not parse back")
+	}
+	if len(blocks) != 1 || len(blocks[0]) != 1 || blocks[0][0] != "свёкла" || steps != "Варить" {
+		t.Fatalf("body round trip lost data: blocks=%v steps=%q", blocks, steps)
+	}
+	// Placeholder fields the web app sends as empty objects.
+	for _, k := range []string{"TextDataAsset", "FirstAttachmentThumbnail", "FirstAttachmentUTIEncrypted"} {
+		f, present := rec.Fields[k]
+		if !present || f.Value != nil {
+			t.Fatalf("%s should be an empty placeholder field, got present=%v value=%s", k, present, f.Value)
+		}
 	}
 }

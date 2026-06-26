@@ -70,11 +70,18 @@
   <ul class="conflicts">
     {{range .Conflicts}}
     <li>
-      <span>{{.Detail}}</span>
-      <form class="inline" method="post" action="/admin/sync/conflicts/{{.ID}}/resolve">
-        <button class="btn-link" type="submit" name="choice" value="local">Оставить из приложения</button>
-        <button class="btn-link" type="submit" name="choice" value="remote">Взять из iCloud</button>
-      </form>
+      <div class="conflict-head">
+        <strong>{{if .Title}}{{.Title}}{{else}}{{.Detail}}{{end}}</strong>
+        <form class="inline" method="post" action="/admin/sync/conflicts/{{.ID}}/resolve">
+          <button class="btn-link" type="submit" name="choice" value="local">Оставить из приложения</button>
+          <button class="btn-link" type="submit" name="choice" value="remote">Взять из iCloud</button>
+        </form>
+      </div>
+      {{if .Title}}<p class="hint">{{.Detail}}</p>{{end}}
+      {{if .Diff}}
+      <p class="hint">− в iCloud, + в приложении</p>
+      <div class="diff">{{range .Diff}}<div class="diff-line diff-{{.Class}}">{{.Sign}} {{.Text}}</div>{{end}}</div>
+      {{end}}
     </li>
     {{end}}
   </ul>

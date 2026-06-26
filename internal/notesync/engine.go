@@ -199,25 +199,33 @@ func (e *Engine) ResolveConflict(ctx context.Context, userID int64, conflictID i
 		return err
 	}
 
+	root := FolderID(acct.NotesFolder)
+
+	// Find the current remote note (if the recipe is linked); used by both sides.
+	var remote *Note
+	if rec.ICloudNoteID != nil {
+		_, notes, _, err := e.provider.FetchZone(ctx, sess, root, "")
+		if err != nil {
+			return err
+		}
+		for i := range notes {
+			if string(notes[i].ID) == *rec.ICloudNoteID {
+				remote = &notes[i]
+				break
+			}
+		}
+	}
+
 	switch choice {
 	case ResolveKeepLocal:
-		if _, err := e.pushRecipe(ctx, sess, FolderID(acct.NotesFolder), rec); err != nil {
+		// Re-push the recipe, replacing the live note (or recreating a vanished one).
+		if _, err := e.pushRecipe(ctx, sess, root, rec, remote); err != nil {
 			return err
 		}
 	case ResolveKeepRemote:
-		// Re-fetch the linked note and overwrite the recipe.
-		if rec.ICloudNoteID != nil {
-			_, notes, _, err := e.provider.FetchZone(ctx, sess, FolderID(acct.NotesFolder), "")
-			if err != nil {
+		if remote != nil {
+			if err := e.applyRemote(ctx, sess, userID, rec, *remote); err != nil {
 				return err
-			}
-			for _, n := range notes {
-				if string(n.ID) == *rec.ICloudNoteID {
-					if err := e.applyRemote(ctx, sess, userID, rec, n); err != nil {
-						return err
-					}
-					break
-				}
 			}
 		}
 	}

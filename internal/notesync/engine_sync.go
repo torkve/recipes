@@ -171,6 +171,17 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 	}
 	root := FolderID(acct.NotesFolder)
 
+	// Read current remote state once so conflict detection is content-based: a stale
+	// stored etag must not look like a remote edit. Mirrors the pull path.
+	_, notes, _, err := e.provider.FetchZone(ctx, sess, root, "")
+	if err != nil {
+		return rep, err
+	}
+	remoteByID := make(map[NoteID]Note, len(notes))
+	for _, n := range notes {
+		remoteByID[n.ID] = n
+	}
+
 	ids, err := e.store.ListRecipeIDsByOwner(ctx, userID)
 	if err != nil {
 		return rep, err
@@ -194,8 +205,33 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 			continue
 		}
 
-		_, err = e.pushRecipe(ctx, sess, root, rec)
+		// Resolve the current remote note for a linked recipe. A vanished note
+		// (remote == nil) is recreated; a present note that changed since our last
+		// sync is a genuine conflict.
+		var remote *Note
+		if rec.ICloudNoteID != nil {
+			if n, ok := remoteByID[NoteID(*rec.ICloudNoteID)]; ok {
+				remote = &n
+			}
+		}
+		if op == pushUpdate && remote != nil {
+			base := ""
+			if state, serr := e.store.GetSyncState(ctx, rec.ID); serr == nil {
+				base = state.RemoteHash
+			} else if !errors.Is(serr, store.ErrNotFound) {
+				return rep, serr
+			}
+			if HashNote(*remote) != base {
+				e.recordConflict(ctx, &rec.ID, strptr(*rec.ICloudNoteID), models.ConflictBothChanged,
+					"Заметка изменена в iCloud с момента последней синхронизации")
+				rep.Conflicts++
+				continue
+			}
+		}
+
+		_, err = e.pushRecipe(ctx, sess, root, rec, remote)
 		if errors.Is(err, ErrEtagConflict) {
+			// TOCTOU backstop: the note changed between the zone read and the delete.
 			var nid *string
 			if rec.ICloudNoteID != nil {
 				nid = strptr(*rec.ICloudNoteID)
@@ -250,8 +286,11 @@ func (e *Engine) classifyPush(ctx context.Context, rec *models.Recipe) (pushOp, 
 	return pushSkip, nil
 }
 
-// pushRecipe creates or updates the note for a recipe and re-links it.
-func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, rec *models.Recipe) (Note, error) {
+// pushRecipe creates or replaces the note for a recipe and re-links it. When remote
+// is non-nil it replaces that live note (PushNote deletes it — guarded by its current
+// etag — and creates a fresh one); when remote is nil it creates a new note, which also
+// re-links a recipe whose old note has vanished.
+func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, rec *models.Recipe, remote *Note) (Note, error) {
 	folderID := root
 	if rec.Category != nil && strings.TrimSpace(rec.Category.Name) != "" {
 		if f, err := e.provider.EnsureFolder(ctx, sess, root, rec.Category.Name); err == nil {
@@ -261,8 +300,11 @@ func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, re
 
 	note := e.recipeToNote(rec, folderID)
 	expected := Etag("")
-	if rec.ICloudEtag != nil {
-		expected = Etag(*rec.ICloudEtag)
+	if remote != nil {
+		note.ID = remote.ID    // delete targets the live note...
+		expected = remote.Etag // ...guarded by its current etag
+	} else {
+		note.ID = "" // pure create (new recipe, or the old note is gone)
 	}
 	saved, err := e.provider.PushNote(ctx, sess, note, expected)
 	if err != nil {
@@ -296,10 +338,13 @@ func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, re
 
 // recipeToNote maps a recipe to a note for pushing, loading image bytes.
 func (e *Engine) recipeToNote(rec *models.Recipe, folderID FolderID) Note {
+	// The pushed body is plain text, one line per step paragraph: the icloud
+	// provider encodes it into the note protobuf, and PlainTextHTML-based hashing
+	// (HashNote/HashRecipe) collapses the newlines, so the round trip is stable.
 	n := Note{
 		FolderID:   folderID,
 		Title:      rec.Title,
-		BodyHTML:   rec.StepsHTML,
+		BodyHTML:   strings.Join(stepLines(rec.StepsHTML), "\n"),
 		Checklists: IngredientsToChecklists(rec.Ingredients),
 	}
 	if rec.ICloudNoteID != nil {

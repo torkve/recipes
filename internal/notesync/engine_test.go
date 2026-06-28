@@ -28,6 +28,8 @@ type fakeProvider struct {
 	imageErr   bool // when true, FetchImage always fails
 
 	pushConflict bool // when true, PushNote reports an etag conflict for updates
+
+	lastPrev PrevNote // captured from the most recent PushNote
 }
 
 type fakeSession struct{ data []byte }
@@ -63,7 +65,8 @@ func (p *fakeProvider) FetchImage(ctx context.Context, sess Session, img NoteIma
 	img.ContentType = http.DetectContentType(data)
 	return img, nil
 }
-func (p *fakeProvider) PushNote(ctx context.Context, sess Session, n Note, expected Etag) (Note, error) {
+func (p *fakeProvider) PushNote(ctx context.Context, sess Session, n Note, expected Etag, prev PrevNote) (Note, error) {
+	p.lastPrev = prev
 	if p.pushConflict && expected != "" {
 		return Note{}, ErrEtagConflict
 	}

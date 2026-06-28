@@ -35,6 +35,9 @@ type Session struct {
 	// CloudKit access.
 	WebServices map[string]string `json:"web_services"` // service name -> base URL
 	ClientID    string            `json:"client_id"`    // stable per-session UUID for CloudKit/setup calls
+	// OwnerRecordName is the Notes zone owner id (from a record's created.userRecordName),
+	// captured on the first zone scan and used in cross-record reference zoneIDs on push.
+	OwnerRecordName string `json:"owner_record_name,omitempty"`
 
 	ExpiresAt time.Time `json:"expires_at"`
 }

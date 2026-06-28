@@ -44,6 +44,52 @@ func TestMigrateSeedsBuiltinCategories(t *testing.T) {
 	}
 }
 
+func TestEnsureReplicaUUID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// No iCloud binding yet → ErrNotFound.
+	if _, err := s.EnsureReplicaUUID(ctx, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("EnsureReplicaUUID without account = %v, want ErrNotFound", err)
+	}
+
+	u, err := s.CreateUser(ctx, "alice", "h", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertICloudAccount(ctx, u.ID, "alice@icloud.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.EnsureReplicaUUID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 16 {
+		t.Fatalf("replica uuid len = %d, want 16", len(first))
+	}
+	// Stable across calls — never a fresh one (that was the propagation bug).
+	again, err := s.EnsureReplicaUUID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, again) {
+		t.Fatalf("replica uuid changed: %x -> %x", first, again)
+	}
+
+	// Idempotent migration must not drop the persisted id.
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	afterMigrate, err := s.EnsureReplicaUUID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, afterMigrate) {
+		t.Fatalf("re-migrate changed replica uuid: %x -> %x", first, afterMigrate)
+	}
+}
+
 func TestEmbeddingsStore(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

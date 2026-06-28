@@ -175,7 +175,7 @@ func TestSessionRoundTrip(t *testing.T) {
 func TestNoteToRecordRoundTrip(t *testing.T) {
 	n := notesync.Note{ID: "N1", Etag: "e1", FolderID: "F1", Title: "Борщ",
 		BodyHTML: "Варить", Checklists: [][]string{{"свёкла"}}}
-	rec, err := noteToRecord(n)
+	rec, err := noteToRecord(n, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

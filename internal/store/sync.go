@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"time"
@@ -21,6 +22,34 @@ func scanICloudAccount(row interface{ Scan(...any) error }) (*models.ICloudAccou
 	a.SessionBlob = blob
 	a.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return &a, nil
+}
+
+// EnsureReplicaUUID returns the user's stable 16-byte Apple Notes CRDT replica id,
+// minting and persisting one on first use. It identifies this app as a single
+// replica across all in-place note updates so the version-vector counters advance
+// monotonically (a fresh id each push is exactly what made updates not propagate).
+// Returns ErrNotFound if the user has no iCloud binding.
+func (s *Store) EnsureReplicaUUID(ctx context.Context, userID int64) ([]byte, error) {
+	var u []byte
+	row := s.db.QueryRowContext(ctx, `SELECT replica_uuid FROM icloud_accounts WHERE user_id = ?`, userID)
+	if err := row.Scan(&u); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if len(u) == 16 {
+		return u, nil
+	}
+	u = make([]byte, 16)
+	if _, err := rand.Read(u); err != nil {
+		return nil, err
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE icloud_accounts SET replica_uuid = ? WHERE user_id = ?`, u, userID); err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 
 // GetICloudAccount returns the iCloud binding for a user, or ErrNotFound.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"recipes/internal/models"
@@ -171,6 +172,13 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 	}
 	root := FolderID(acct.NotesFolder)
 
+	// Our stable CRDT replica id, minted once per account. In-place note updates
+	// advance this replica's version-vector counters so they propagate to devices.
+	replicaUUID, err := e.store.EnsureReplicaUUID(ctx, userID)
+	if err != nil {
+		return rep, err
+	}
+
 	// Read current remote state once so conflict detection is content-based: a stale
 	// stored etag must not look like a remote edit. Mirrors the pull path.
 	_, notes, _, err := e.provider.FetchZone(ctx, sess, root, "")
@@ -229,7 +237,7 @@ func (e *Engine) PushUser(ctx context.Context, userID int64) (PushReport, error)
 			}
 		}
 
-		_, err = e.pushRecipe(ctx, sess, root, rec, remote)
+		_, err = e.pushRecipe(ctx, sess, root, rec, remote, replicaUUID)
 		if errors.Is(err, ErrEtagConflict) {
 			// TOCTOU backstop: the note changed between the zone read and the delete.
 			var nid *string
@@ -290,7 +298,7 @@ func (e *Engine) classifyPush(ctx context.Context, rec *models.Recipe) (pushOp, 
 // is non-nil it replaces that live note (PushNote deletes it — guarded by its current
 // etag — and creates a fresh one); when remote is nil it creates a new note, which also
 // re-links a recipe whose old note has vanished.
-func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, rec *models.Recipe, remote *Note) (Note, error) {
+func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, rec *models.Recipe, remote *Note, replicaUUID []byte) (Note, error) {
 	folderID := root
 	if rec.Category != nil && strings.TrimSpace(rec.Category.Name) != "" {
 		if f, err := e.provider.EnsureFolder(ctx, sess, root, rec.Category.Name); err == nil {
@@ -300,13 +308,20 @@ func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, re
 
 	note := e.recipeToNote(rec, folderID)
 	expected := Etag("")
+	prev := PrevNote{ReplicaUUID: replicaUUID}
 	if remote != nil {
-		note.ID = remote.ID    // delete targets the live note...
+		note.ID = remote.ID    // update/replace targets the live note...
 		expected = remote.Etag // ...guarded by its current etag
+		// Carry the live note's raw body (its CRDT version vector) for an in-place
+		// update, and its attachment ids for the soft-delete-and-recreate fallback.
+		prev.RawBody = remote.RawBody
+		for _, im := range remote.Images {
+			prev.AttachmentIDs = append(prev.AttachmentIDs, im.ID)
+		}
 	} else {
 		note.ID = "" // pure create (new recipe, or the old note is gone)
 	}
-	saved, err := e.provider.PushNote(ctx, sess, note, expected)
+	saved, err := e.provider.PushNote(ctx, sess, note, expected, prev)
 	if err != nil {
 		return Note{}, err
 	}
@@ -336,15 +351,21 @@ func (e *Engine) pushRecipe(ctx context.Context, sess Session, root FolderID, re
 	return saved, nil
 }
 
+// imgSrcRE matches an inline <img> in the steps and captures its uploads filename,
+// so push can turn it into an @@IMG:filename@@ marker the provider places inline.
+var imgSrcRE = regexp.MustCompile(`(?is)<img\b[^>]*src="/uploads/([^"?]+)"[^>]*>`)
+
 // recipeToNote maps a recipe to a note for pushing, loading image bytes.
 func (e *Engine) recipeToNote(rec *models.Recipe, folderID FolderID) Note {
-	// The pushed body is plain text, one line per step paragraph: the icloud
-	// provider encodes it into the note protobuf, and PlainTextHTML-based hashing
-	// (HashNote/HashRecipe) collapses the newlines, so the round trip is stable.
+	// The pushed body is plain text, one line per step paragraph, with inline images
+	// kept as @@IMG:filename@@ markers (the icloud provider encodes them into the note
+	// protobuf). PlainTextHTML-based hashing (HashNote/HashRecipe) collapses newlines
+	// and strips image markers, so the round trip stays stable.
+	withMarkers := imgSrcRE.ReplaceAllString(rec.StepsHTML, "@@IMG:$1@@")
 	n := Note{
 		FolderID:   folderID,
 		Title:      rec.Title,
-		BodyHTML:   strings.Join(stepLines(rec.StepsHTML), "\n"),
+		BodyHTML:   strings.Join(stepLinesKeepMarkers(withMarkers), "\n"),
 		Checklists: IngredientsToChecklists(rec.Ingredients),
 	}
 	if rec.ICloudNoteID != nil {

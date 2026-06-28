@@ -143,9 +143,18 @@ func TestPlanPushDiffSkipsUnchanged(t *testing.T) {
 	}
 }
 
-// TestPlanPushDiffIgnoresImageOnlyChange verifies that adding an image (which the
-// content hash deliberately ignores) does not surface the recipe as a change.
-func TestPlanPushDiffIgnoresImageOnlyChange(t *testing.T) {
+// diffHas reports whether the diff contains a line with the given op and text.
+func diffHas(item PushItem, op DiffOp, text string) bool {
+	for _, l := range item.Diff {
+		if l.Op == op && l.Text == text {
+			return true
+		}
+	}
+	return false
+}
+
+// Adding an inline image surfaces the recipe as a change with a "+ изображение" line.
+func TestPlanPushDiffImageAdded(t *testing.T) {
 	ctx := context.Background()
 	eng, st, fp, uid := newTestEngine(t)
 	mustBind(t, eng, uid)
@@ -155,6 +164,12 @@ func TestPlanPushDiffIgnoresImageOnlyChange(t *testing.T) {
 	fp.notes = []Note{{ID: NoteID(*rec.ICloudNoteID), Title: "Сырники",
 		Checklists: [][]string{{"соль"}}, BodyHTML: "<p>Жарить.</p>"}}
 
+	in := recipeInput("Сырники", rec.CategoryID, `<p>Жарить.</p><img src="/uploads/pic.png">`, uid)
+	in.ICloudNoteID = rec.ICloudNoteID
+	in.ICloudEtag = rec.ICloudEtag
+	if err := st.UpdateRecipe(ctx, id, in); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.AddImage(ctx, id, "pic.png", "image/png"); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +178,41 @@ func TestPlanPushDiffIgnoresImageOnlyChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prev.HasChanges() {
-		t.Fatalf("image-only change surfaced as a push item: %+v", prev.Items)
+	if len(prev.Updates()) != 1 {
+		t.Fatalf("adding an image should surface one update, got %+v", prev)
+	}
+	if !diffHas(prev.Updates()[0], diffAdd, "изображение") {
+		t.Fatalf("expected a '+ изображение' line, got %+v", prev.Updates()[0].Diff)
+	}
+}
+
+// Removing an image shows a "− изображение" line (remote has it, local doesn't).
+func TestPlanPushDiffImageRemoved(t *testing.T) {
+	ctx := context.Background()
+	eng, st, fp, uid := newTestEngine(t)
+	mustBind(t, eng, uid)
+
+	id := newPushedRecipe(t, eng, st, uid, "Сырники", "<p>Жарить.</p>")
+	rec, _ := st.GetRecipe(ctx, id)
+	// Remote note carries an image; the recipe has none. A text edit makes it an update.
+	fp.notes = []Note{{ID: NoteID(*rec.ICloudNoteID), Title: "Сырники",
+		Checklists: [][]string{{"соль"}}, BodyHTML: "<p>Жарить.</p>",
+		Images: []NoteImage{{ID: "ATT-1"}}}}
+	in := recipeInput("Сырники", rec.CategoryID, "<p>Жарить быстро.</p>", uid)
+	in.ICloudNoteID = rec.ICloudNoteID
+	in.ICloudEtag = rec.ICloudEtag
+	if err := st.UpdateRecipe(ctx, id, in); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, err := eng.PlanPushDiff(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prev.Updates()) != 1 {
+		t.Fatalf("want one update, got %+v", prev)
+	}
+	if !diffHas(prev.Updates()[0], diffDel, "изображение") {
+		t.Fatalf("expected a '− изображение' line, got %+v", prev.Updates()[0].Diff)
 	}
 }

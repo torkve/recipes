@@ -3,6 +3,7 @@ package icloud
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"recipes/internal/notesync"
 )
@@ -135,6 +138,17 @@ func (p *Provider) FetchZone(ctx context.Context, sess notesync.Session, root no
 	recs, next, err := p.zoneChanges(ctx, s, since, notesDesiredKeys, notesDesiredRecordTypes)
 	if err != nil {
 		return nil, nil, "", err
+	}
+
+	// Capture the zone owner id (needed in cross-record reference zoneIDs when pushing
+	// images) from any record's creation metadata.
+	if s.OwnerRecordName == "" {
+		for _, r := range recs {
+			if r.Created != nil && r.Created.UserRecordName != "" {
+				s.OwnerRecordName = r.Created.UserRecordName
+				break
+			}
+		}
 	}
 
 	var rawFolders []notesync.Folder
@@ -359,33 +373,77 @@ func (p *Provider) FetchImage(ctx context.Context, sess notesync.Session, img no
 	return img, nil
 }
 
-// PushNote creates or updates a note, translating CloudKit conflicts.
-func (p *Provider) PushNote(ctx context.Context, sess notesync.Session, n notesync.Note, expectedEtag notesync.Etag) (notesync.Note, error) {
+// PushNote creates, updates-in-place, or replaces a note, translating CloudKit conflicts.
+//
+// A new note (n.ID == "") is a plain create. A linked note (n.ID set) is UPDATED in
+// place when we can read its mergeable CRDT version vector (prev.RawBody): we keep every
+// device's replica entry verbatim and advance our own so the update strictly dominates
+// and propagates — with no delete, so no validating-reference error and no trash. When
+// the vector is unreadable we fall back to soft-deleting the old note (Deleted=1) and
+// creating a fresh one (a hard delete would be rejected by the note's child attachments).
+// Inline images are uploaded and their Media/Attachment records created in the same atomic
+// batch, referencing the surviving note id. An expectedEtag mismatch maps to ErrEtagConflict.
+func (p *Provider) PushNote(ctx context.Context, sess notesync.Session, n notesync.Note, expectedEtag notesync.Etag, prev notesync.PrevNote) (notesync.Note, error) {
 	s, ok := sess.(*Session)
 	if !ok {
 		return notesync.Note{}, errBadSession
 	}
-	// Modern Notes renders the body from the mergeable/CRDT structure and gates
-	// updates on a version vector we don't maintain, so an in-place update doesn't
-	// propagate. Instead a linked note is REPLACED: atomically delete the old record
-	// (etag-guarded, so a concurrent device edit surfaces as a conflict) and create a
-	// fresh one. A new (unlinked) note is a single create.
+
+	var rep *replicaState
+	inPlace := false
+	if n.ID != "" && len(prev.ReplicaUUID) == 16 {
+		if entries, ok := parseObjectTable(prev.RawBody); ok {
+			rep = replicaStateFor(entries, prev.ReplicaUUID)
+			inPlace = true
+		}
+	}
+
+	// The note id images attach to: the surviving note for an update, else a fresh one.
+	noteID := string(n.ID)
+	if !inPlace {
+		noteID = uuid.NewString()
+	}
+	images, attachOps := p.buildImageOps(ctx, s, n, noteID)
+
 	var ops []modifyOp
-	if n.ID != "" {
-		ops = append(ops, modifyOp{OperationType: "delete", Record: ckRecord{
-			RecordName:      string(n.ID),
-			RecordType:      recordTypeNote,
-			RecordChangeTag: string(expectedEtag),
-			ZoneID:          ckZoneID{ZoneName: notesZone},
-		}})
-		n.ID = "" // force a fresh-UUID create
-		n.Etag = ""
+	if inPlace {
+		// Update the existing record in place: same recordName, etag-guarded, with the
+		// preserved+advanced version vector spliced into the body via rep.
+		rec, err := noteToRecord(n, images, rep)
+		if err != nil {
+			return notesync.Note{}, err
+		}
+		rec.RecordName = noteID
+		rec.RecordChangeTag = string(expectedEtag)
+		rec.CreateShortGUID = false
+		ops = append(ops, modifyOp{OperationType: "update", Record: rec})
+		// The new body references freshly-uploaded image attachments, so the note's
+		// previous Attachment/Media records are now orphaned. Delete them in the same
+		// batch (the note is updated, not deleted, so this trips no validating reference).
+		if len(prev.AttachmentIDs) > 0 {
+			delOps, err := p.oldChildDeleteOps(ctx, s, prev.AttachmentIDs)
+			if err != nil {
+				return notesync.Note{}, err
+			}
+			ops = append(ops, delOps...)
+		}
+	} else {
+		if n.ID != "" {
+			// Linked note with no readable version vector: an in-place update wouldn't
+			// propagate and a hard delete is blocked by its child attachments, so trash
+			// the old note and recreate. Logged so we can measure how often this fires.
+			log.Printf("icloud: note %s has no readable version vector; soft-deleting and recreating", n.ID)
+			ops = append(ops, softDeleteOp(string(n.ID), expectedEtag))
+		}
+		n.ID, n.Etag = "", ""
+		rec, err := noteToRecord(n, images, nil)
+		if err != nil {
+			return notesync.Note{}, err
+		}
+		rec.RecordName = noteID
+		ops = append(ops, modifyOp{OperationType: "create", Record: rec})
 	}
-	rec, err := noteToRecord(n)
-	if err != nil {
-		return notesync.Note{}, err
-	}
-	ops = append(ops, modifyOp{OperationType: "create", Record: rec})
+	ops = append(ops, attachOps...)
 
 	body, err := modifyBody(ops)
 	if err != nil {
@@ -405,14 +463,112 @@ func (p *Provider) PushNote(ctx context.Context, sess notesync.Session, n notesy
 	if err != nil {
 		return notesync.Note{}, err
 	}
-	// Return the newly-created note (id/etag) so the engine re-links the recipe; the
-	// response may also echo the deleted record, so match by the created recordName.
+	// Return the saved note (id/etag) so the engine re-links the recipe; the response
+	// may echo other ops' records, so match by our note id.
 	for _, r := range recs {
-		if r.RecordName == rec.RecordName {
+		if r.RecordName == noteID {
 			return recordToNote(r), nil
 		}
 	}
-	return notesync.Note{}, fmt.Errorf("icloud: modify did not return the created note")
+	return notesync.Note{}, fmt.Errorf("icloud: modify did not return the note")
+}
+
+// buildImageOps uploads each inline image referenced by the note body markers and
+// returns the filename->mImage map the body encoder splices in plus the create ops for
+// their Media/Attachment records (referencing noteID). An image that fails to upload is
+// skipped (its marker then drops out of the body).
+func (p *Provider) buildImageOps(ctx context.Context, s *Session, n notesync.Note, noteID string) (map[string]mImage, []modifyOp) {
+	imgByName := make(map[string]notesync.NoteImage, len(n.Images))
+	for _, img := range n.Images {
+		imgByName[img.ID] = img
+	}
+	images := map[string]mImage{}
+	var ops []modifyOp
+	for _, fn := range bodyImageNames(n.BodyHTML) {
+		img, ok := imgByName[fn]
+		if !ok || len(img.Data) == 0 {
+			continue
+		}
+		mediaID := uuid.NewString()
+		attachmentID := uuid.NewString()
+		asset, err := p.uploadAsset(ctx, s, recordTypeMedia, "Asset", mediaID, img.Data)
+		if err != nil {
+			log.Printf("icloud: skipping image %q: %v", fn, err) // keep the rest of the note
+			continue
+		}
+		uti := utiForContentType(img.ContentType)
+		w, h := imageDims(img.Data)
+		images[fn] = mImage{attachmentID: attachmentID, uti: uti}
+		ops = append(ops,
+			modifyOp{OperationType: "create", Record: mediaToRecord(mediaID, noteID, fn, asset)},
+			modifyOp{OperationType: "create", Record: attachmentToRecord(attachmentID, noteID, mediaID, s.OwnerRecordName, uti, w, h, int64(len(img.Data)))},
+		)
+	}
+	return images, ops
+}
+
+// oldChildDeleteOps builds delete ops for the given old Attachment records and their
+// backing Media, so an in-place update that re-creates inline images doesn't orphan the
+// previous ones. Media ids aren't in the note body, so they're recovered by looking the
+// Attachments up (each carries a Media reference), deduped. A lookup error aborts —
+// better than silently leaking storage. Deleting these alongside a note UPDATE (not a
+// delete) trips no validating reference: the note survives and each attachment's only
+// validating referrer (nothing) and each media's (its attachment) go in the same batch.
+//
+// The ops use forceDelete: a plain "delete" requires the record's current recordChangeTag
+// (CloudKit rejects it otherwise), but we don't track child etags and don't want
+// optimistic concurrency on records we're discarding. The note update is still etag-guarded,
+// so a concurrent edit still fails the whole atomic batch (taking these deletes with it).
+func (p *Provider) oldChildDeleteOps(ctx context.Context, s *Session, attachmentIDs []string) ([]modifyOp, error) {
+	atts, err := p.lookupRecords(ctx, s, attachmentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("icloud: lookup old attachments for cleanup: %w", err)
+	}
+	ops := make([]modifyOp, 0, len(attachmentIDs))
+	for _, id := range attachmentIDs {
+		ops = append(ops, modifyOp{OperationType: "forceDelete", Record: ckRecord{
+			RecordName: id, RecordType: recordTypeAttachment, ZoneID: ckZoneID{ZoneName: notesZone},
+		}})
+	}
+	seenMedia := map[string]bool{}
+	for _, a := range atts {
+		m := a.referenceField("Media")
+		if m == "" || seenMedia[m] {
+			continue
+		}
+		seenMedia[m] = true
+		ops = append(ops, modifyOp{OperationType: "forceDelete", Record: ckRecord{
+			RecordName: m, RecordType: recordTypeMedia, ZoneID: ckZoneID{ZoneName: notesZone},
+		}})
+	}
+	return ops, nil
+}
+
+// softDeleteOp updates a note to Deleted=1 (Apple's "Recently Deleted"), etag-guarded.
+// Used as the replace fallback when an in-place update isn't possible.
+func softDeleteOp(noteID string, etag notesync.Etag) modifyOp {
+	return modifyOp{OperationType: "update", Record: ckRecord{
+		RecordName:      noteID,
+		RecordType:      recordTypeNote,
+		RecordChangeTag: string(etag),
+		Fields:          map[string]ckField{"Deleted": int64Field(1)},
+		ZoneID:          ckZoneID{ZoneName: notesZone},
+	}}
+}
+
+// replicaStateFor splits a note's existing object-table entries into the foreign
+// replicas to preserve verbatim and our own replica's base counters to advance from
+// (zero if our replica isn't in the note yet).
+func replicaStateFor(entries [][]byte, ourUUID []byte) *replicaState {
+	rep := &replicaState{uuid: ourUUID}
+	for _, e := range entries {
+		if bytes.Equal(objEntryUUID(e), ourUUID) {
+			rep.baseC1, rep.baseC2 = objEntryCounters(e)
+			continue // our entry is re-emitted advanced, not as a foreign passthrough
+		}
+		rep.foreign = append(rep.foreign, e)
+	}
+	return rep
 }
 
 // EnsureFolder finds a folder by name under parent, creating it if absent.
@@ -461,10 +617,12 @@ func (p *Provider) EnsureFolder(ctx context.Context, sess notesync.Session, pare
 
 // --- CloudKit HTTP helpers --------------------------------------------------
 
-func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byte) ([]byte, error) {
+// ckURL builds the ckdatabasews endpoint URL (with the CloudKit-JS query params) for
+// an operation, e.g. "records/modify" or "assets/upload".
+func (p *Provider) ckURL(s *Session, op string) (string, error) {
 	base := s.ckDatabaseURL()
 	if base == "" {
-		return nil, errors.New("icloud: no ckdatabasews URL in session")
+		return "", errors.New("icloud: no ckdatabasews URL in session")
 	}
 	endpoint := fmt.Sprintf("%s/database/1/%s/%s/%s/%s", base, notesContainer, ckEnv, ckScope, op)
 	q := url.Values{}
@@ -474,7 +632,14 @@ func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byt
 	q.Set("clientBuildNumber", ckClientBuildNumber)
 	q.Set("clientMasteringNumber", ckClientMasteringNumber)
 	q.Set("dsid", s.DSID)
+	return endpoint + "?" + q.Encode(), nil
+}
 
+func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byte) ([]byte, error) {
+	u, err := p.ckURL(s, op)
+	if err != nil {
+		return nil, err
+	}
 	// CloudKit web auth is cookie-based; it expects text/plain and an icloud.com
 	// origin. Cookies (incl. X-APPLE-WEBAUTH-VALIDATE / PCS) are replayed by do().
 	headers := map[string]string{
@@ -482,8 +647,54 @@ func (p *Provider) ckPost(ctx context.Context, s *Session, op string, body []byt
 		"Origin":       oauthRedir,
 		"Referer":      oauthRedir + "/",
 	}
-	respBody, _, err := p.do(ctx, http.MethodPost, endpoint+"?"+q.Encode(), headers, body, s)
+	respBody, _, err := p.do(ctx, http.MethodPost, u, headers, body, s)
 	return respBody, err
+}
+
+// maxAssetBytes is CloudKit Web Services' single-asset upload cap.
+const maxAssetBytes = 15 << 20
+
+// uploadAsset uploads one asset's bytes for (recordType, fieldName, recordName) via the
+// two-step CloudKit flow (request an upload URL, then POST the bytes) and returns the
+// singleFile dict to drop verbatim into that ASSET field on the subsequent create.
+func (p *Provider) uploadAsset(ctx context.Context, s *Session, recordType, fieldName, recordName string, data []byte) (json.RawMessage, error) {
+	if len(data) > maxAssetBytes {
+		return nil, fmt.Errorf("icloud: asset too large (%d bytes; max %d)", len(data), maxAssetBytes)
+	}
+	reqBody, _ := json.Marshal(map[string]any{"tokens": []any{map[string]string{
+		"recordType": recordType, "fieldName": fieldName, "recordName": recordName,
+	}}})
+	respBody, err := p.ckPost(ctx, s, "assets/upload", reqBody)
+	if err != nil {
+		return nil, err
+	}
+	var tr struct {
+		Tokens []struct {
+			URL string `json:"url"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(respBody, &tr); err != nil {
+		return nil, fmt.Errorf("icloud: parse asset upload tokens: %w", err)
+	}
+	if len(tr.Tokens) == 0 || tr.Tokens[0].URL == "" {
+		return nil, fmt.Errorf("icloud: no asset upload URL returned")
+	}
+	upBody, _, err := p.do(ctx, http.MethodPost, tr.Tokens[0].URL,
+		map[string]string{"Content-Type": "application/octet-stream", "Origin": oauthRedir, "Referer": oauthRedir + "/"},
+		data, s)
+	if err != nil {
+		return nil, err
+	}
+	var up struct {
+		SingleFile json.RawMessage `json:"singleFile"`
+	}
+	if err := json.Unmarshal(upBody, &up); err != nil {
+		return nil, fmt.Errorf("icloud: parse asset upload result: %w", err)
+	}
+	if len(up.SingleFile) == 0 {
+		return nil, fmt.Errorf("icloud: asset upload returned no singleFile")
+	}
+	return up.SingleFile, nil
 }
 
 // do performs an HTTP request, replaying the session cookies and returning the

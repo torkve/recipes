@@ -32,6 +32,13 @@ type ckRecord struct {
 	ZoneID          ckZoneID           `json:"zoneID,omitempty"`
 	Parent          *ckRef             `json:"parent,omitempty"`
 	CreateShortGUID bool               `json:"createShortGUID,omitempty"`
+	Created         *ckCreated         `json:"created,omitempty"` // read-only; carries the zone owner id
+}
+
+// ckCreated is the read-only creation metadata; userRecordName is the zone owner
+// (needed in cross-record reference zoneIDs on write).
+type ckCreated struct {
+	UserRecordName string `json:"userRecordName"`
 }
 
 // ckRef is a bare record reference (recordName only), used for a record's parent.
@@ -50,7 +57,9 @@ type ckField struct {
 }
 
 type ckZoneID struct {
-	ZoneName string `json:"zoneName"`
+	ZoneName        string `json:"zoneName"`
+	OwnerRecordName string `json:"ownerRecordName,omitempty"`
+	ZoneType        string `json:"zoneType,omitempty"`
 }
 
 // stringField returns the first present field (by candidate name) decoded as a
@@ -245,7 +254,7 @@ func parseLookup(body []byte) ([]ckRecord, error) {
 
 // modifyOp is a single record operation for records/modify.
 type modifyOp struct {
-	OperationType string   `json:"operationType"` // create | update | delete
+	OperationType string   `json:"operationType"` // create | update | delete | forceDelete
 	Record        ckRecord `json:"record"`
 }
 

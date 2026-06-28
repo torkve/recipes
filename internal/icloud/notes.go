@@ -1,8 +1,13 @@
 package icloud
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	_ "image/gif"  // register GIF decoder for imageDims
+	_ "image/jpeg" // register JPEG decoder for imageDims
+	_ "image/png"  // register PNG decoder for imageDims
 	"strings"
 	"time"
 
@@ -62,6 +67,9 @@ func recordToNote(r ckRecord) notesync.Note {
 	// Prefer the full body (checklist ingredients + steps) from the note blob;
 	// fall back to the plain-text snippet preview when it can't be parsed.
 	if td := r.decodedField("TextDataEncrypted"); td != "" {
+		// Carry the raw blob so a push can update the note in place (preserving the
+		// CRDT version vector); the engine treats it as opaque.
+		n.RawBody = []byte(td)
 		if blocks, steps, imageIDs, ok := parseNoteBody([]byte(td)); ok {
 			n.Checklists = blocks
 			n.BodyHTML = steps
@@ -86,8 +94,8 @@ func recordToNote(r ckRecord) notesync.Note {
 // caller picks create vs update via the note id/etag: an empty id is a create
 // (recordName/recordChangeTag are omitted; the server mints the id via
 // createShortGUID).
-func noteToRecord(n notesync.Note) (ckRecord, error) {
-	body, err := encodeMergeableNoteBody(n.Title, n.Checklists, n.BodyHTML)
+func noteToRecord(n notesync.Note, images map[string]mImage, rep *replicaState) (ckRecord, error) {
+	body, err := encodeMergeableNoteBody(n.Title, n.Checklists, n.BodyHTML, images, rep)
 	if err != nil {
 		return ckRecord{}, err
 	}
@@ -129,6 +137,132 @@ func noteToRecord(n notesync.Note) (ckRecord, error) {
 func int64Field(v int64) ckField {
 	b, _ := json.Marshal(v)
 	return ckField{Value: b}
+}
+
+// doubleField sends a CloudKit DOUBLE, value-only.
+func doubleField(v float64) ckField {
+	b, _ := json.Marshal(v)
+	return ckField{Value: b}
+}
+
+// stringField marshals a plain string as a ckField value (CloudKit STRING).
+func stringField(s string) ckField {
+	b, _ := json.Marshal(s)
+	return ckField{Value: b}
+}
+
+const (
+	recordTypeMedia      = "Media"
+	recordTypeAttachment = "Attachment"
+	zoneTypeCustom       = "REGULAR_CUSTOM_ZONE"
+)
+
+// bodyImageNames returns the distinct image filenames referenced by @@IMG:name@@
+// markers in a pushed note body, in first-seen order.
+func bodyImageNames(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range imgTokenRE.FindAllString(body, -1) {
+		id := strings.TrimSuffix(strings.TrimPrefix(m, "@@IMG:"), "@@")
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// imageDims returns an image's pixel width/height, or 0,0 if it can't be decoded.
+func imageDims(data []byte) (int64, int64) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return int64(cfg.Width), int64(cfg.Height)
+}
+
+// utiForContentType maps an image MIME type to the Apple UTI used in note
+// attachments; defaults to public.jpeg.
+func utiForContentType(ct string) string {
+	switch ct {
+	case "image/png":
+		return "public.png"
+	case "image/gif":
+		return "com.compuserve.gif"
+	case "image/heic":
+		return "public.heic"
+	case "image/webp":
+		return "org.webmproject.webp"
+	default:
+		return "public.jpeg"
+	}
+}
+
+// recordRef builds a VALIDATE reference to another record in the Notes zone,
+// carrying the full zoneID (ownerRecordName + zoneType) the web app sends for
+// Attachment.Media / Attachment.Note cross-references.
+func recordRef(recordName, owner string) ckField {
+	z := map[string]string{"zoneName": notesZone}
+	if owner != "" {
+		z["ownerRecordName"] = owner
+		z["zoneType"] = zoneTypeCustom
+	}
+	v, _ := json.Marshal(map[string]any{
+		"recordName": recordName,
+		"action":     "VALIDATE",
+		"zoneID":     z,
+	})
+	return ckField{Value: v}
+}
+
+// mediaToRecord builds the Media record that holds an uploaded image asset. parent
+// and the implicit owner are the note. asset is the singleFile dict returned by
+// uploadAsset, dropped in verbatim as the Asset value.
+func mediaToRecord(recordName, noteID, filename string, asset json.RawMessage) ckRecord {
+	return ckRecord{
+		RecordName: recordName,
+		RecordType: recordTypeMedia,
+		Fields: map[string]ckField{
+			"Asset":                        {Value: asset},
+			"FilenameEncrypted":            encryptedBytesField([]byte(filename)),
+			"Deleted":                      int64Field(0),
+			"MinimumSupportedNotesVersion": int64Field(0),
+		},
+		ZoneID:          ckZoneID{ZoneName: notesZone},
+		Parent:          &ckRef{RecordName: noteID},
+		CreateShortGUID: true,
+	}
+}
+
+// attachmentToRecord builds the Attachment record that ties a Media asset to the
+// note body (the body's f12 entry references this Attachment's recordName). width
+// and height are 0 when the image couldn't be decoded (then they are omitted).
+func attachmentToRecord(recordName, noteID, mediaID, owner, uti string, width, height, fileSize int64) ckRecord {
+	now := time.Now().UnixMilli()
+	fields := map[string]ckField{
+		"UTI":                          stringField(uti),
+		"UTIEncrypted":                 encryptedBytesField([]byte(uti)),
+		"Media":                        recordRef(mediaID, owner),
+		"Note":                         recordRef(noteID, owner),
+		"Orientation":                  int64Field(0),
+		"Deleted":                      int64Field(0),
+		"FileSize":                     int64Field(fileSize),
+		"CreationDate":                 int64Field(now),
+		"LastModificationDate":         int64Field(now),
+		"MinimumSupportedNotesVersion": int64Field(0),
+	}
+	if width > 0 && height > 0 {
+		fields["Width"] = doubleField(float64(width))
+		fields["Height"] = doubleField(float64(height))
+	}
+	return ckRecord{
+		RecordName:      recordName,
+		RecordType:      recordTypeAttachment,
+		Fields:          fields,
+		ZoneID:          ckZoneID{ZoneName: notesZone},
+		Parent:          &ckRef{RecordName: noteID},
+		CreateShortGUID: true,
+	}
 }
 
 // noteSnippet builds the short list-preview text for SnippetEncrypted: the title

@@ -218,8 +218,12 @@ func (e *Engine) ResolveConflict(ctx context.Context, userID int64, conflictID i
 
 	switch choice {
 	case ResolveKeepLocal:
-		// Re-push the recipe, replacing the live note (or recreating a vanished one).
-		if _, err := e.pushRecipe(ctx, sess, root, rec, remote); err != nil {
+		// Re-push the recipe, updating the live note in place (or recreating a vanished one).
+		replicaUUID, err := e.store.EnsureReplicaUUID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if _, err := e.pushRecipe(ctx, sess, root, rec, remote, replicaUUID); err != nil {
 			return err
 		}
 	case ResolveKeepRemote:

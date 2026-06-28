@@ -141,7 +141,7 @@ func TestParseNoteBodyTopImagePreserved(t *testing.T) {
 	text := "￼\nБрамбораки\nНатереть картофель\n"
 	runs := []noteRun{
 		{length: 1, styleType: 0, attachID: "HERO-1", attachUTI: "public.jpeg"}, // image
-		{length: len([]rune("\nБрамбораки\n")), styleType: 0},                    // title line
+		{length: len([]rune("\nБрамбораки\n")), styleType: 0},                   // title line
 		{length: len([]rune("Натереть картофель\n")), styleType: -1},            // step
 	}
 	_, steps, imgs, ok := parseNoteBody(buildNoteBlob(text, runs))

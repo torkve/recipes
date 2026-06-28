@@ -48,6 +48,22 @@ type Note struct {
 	BodyHTML   string      // raw/untrusted; the engine sanitizes before storing
 	Checklists [][]string  // each checklist becomes one ingredient block
 	Images     []NoteImage // re-hosted under /uploads/ on import
+	// RawBody is the backend's opaque on-the-wire body blob (iCloud: the decoded
+	// TextDataEncrypted). The engine never interprets it — it only carries it back to
+	// PushNote so a replace can update the note in place, preserving the CRDT version
+	// vector. Excluded from conflict hashing.
+	RawBody []byte
+}
+
+// PrevNote describes the live note a push is replacing, carrying what the provider
+// needs to update it in place: the opaque RawBody (to preserve the CRDT version
+// vector), the existing image AttachmentIDs (for the recreate fallback), and the
+// engine's stable ReplicaUUID (our identity in that version vector). Zero value (no
+// RawBody) means a plain create.
+type PrevNote struct {
+	RawBody       []byte
+	AttachmentIDs []string
+	ReplicaUUID   []byte
 }
 
 // Session is opaque, serializable auth state persisted (encrypted) in
@@ -89,10 +105,12 @@ type SyncProvider interface {
 	// returning the same NoteImage with Data and ContentType filled in.
 	FetchImage(ctx context.Context, sess Session, img NoteImage) (NoteImage, error)
 
-	// PushNote creates (expectedEtag == "") or updates a note. A mismatch
-	// between expectedEtag and the live note must be reported as ErrEtagConflict
-	// rather than overwriting.
-	PushNote(ctx context.Context, sess Session, n Note, expectedEtag Etag) (Note, error)
+	// PushNote creates (n.ID == "") or updates/replaces (n.ID set) a note. For an
+	// existing note it updates in place when prev carries enough state to preserve the
+	// backend's version vector, else falls back to recreating it. A mismatch between
+	// expectedEtag and the live note must be reported as ErrEtagConflict rather than
+	// overwriting. prev describes the live note being replaced (see PrevNote).
+	PushNote(ctx context.Context, sess Session, n Note, expectedEtag Etag, prev PrevNote) (Note, error)
 
 	// EnsureFolder finds or creates a subfolder under parent.
 	EnsureFolder(ctx context.Context, sess Session, parent FolderID, name string) (Folder, error)

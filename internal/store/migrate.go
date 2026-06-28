@@ -117,10 +117,50 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("store: migrate schema: %w", err)
 	}
+	// Additive column for the Notes CRDT replica id (added after icloud_accounts
+	// shipped, so it can't live in the CREATE above for existing databases).
+	if err := s.addColumn(ctx, "icloud_accounts", "replica_uuid", "BLOB"); err != nil {
+		return fmt.Errorf("store: add icloud_accounts.replica_uuid: %w", err)
+	}
 	if err := s.seedCategories(ctx); err != nil {
 		return fmt.Errorf("store: seed categories: %w", err)
 	}
 	return nil
+}
+
+// addColumn adds a column to a table if it is absent (SQLite has no
+// ADD COLUMN IF NOT EXISTS), making the migration idempotent. table/column/decl are
+// trusted constants, not user input.
+func (s *Store) addColumn(ctx context.Context, table, column, decl string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             any
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found {
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, decl))
+	return err
 }
 
 func (s *Store) seedCategories(ctx context.Context) error {

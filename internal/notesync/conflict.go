@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"recipes/internal/models"
@@ -49,7 +50,13 @@ func Classify(localChanged, remoteChanged bool) Decision {
 // HTML-cosmetic differences (tags, whitespace) do not create phantom conflicts.
 // Images are intentionally excluded: a note's image bytes and a recipe's
 // re-hosted /uploads/ filename would never match and would force false conflicts.
-func fingerprint(title string, ings []models.IngredientBlock, plainSteps string) string {
+// fingerprint projects a recipe/note to a stable hash. Image bytes/markers are
+// excluded from the text projection (a note's image bytes and a recipe's re-hosted
+// <img> never match), but the image COUNT is folded in so adding/removing an image is
+// a detected change. The count is appended only when > 0, so image-less recipes/notes
+// hash exactly as before this was added — no mass reclassification of existing sync
+// state. (A same-count image replacement is not detected; that's an accepted limit.)
+func fingerprint(title string, ings []models.IngredientBlock, plainSteps string, imageCount int) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimSpace(title))
 	b.WriteByte('\n')
@@ -63,17 +70,24 @@ func fingerprint(title string, ings []models.IngredientBlock, plainSteps string)
 		b.WriteByte('\n')
 	}
 	b.WriteString(strings.Join(strings.Fields(imgMarkerRE.ReplaceAllString(plainSteps, "")), " "))
+	if imageCount > 0 {
+		b.WriteByte('\x1d')
+		b.WriteString(strconv.Itoa(imageCount))
+	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
 }
 
-// HashRecipe fingerprints the app-side recipe.
+// HashRecipe fingerprints the app-side recipe. Inline images are counted from the
+// <img src="/uploads/…"> tags that get pushed as note attachments.
 func HashRecipe(r *models.Recipe) string {
-	return fingerprint(r.Title, r.Ingredients, store.PlainTextHTML(r.StepsHTML))
+	return fingerprint(r.Title, r.Ingredients, store.PlainTextHTML(r.StepsHTML),
+		len(imgSrcRE.FindAllString(r.StepsHTML, -1)))
 }
 
-// HashNote fingerprints the backend note using the same projection as HashRecipe,
-// so the two are directly comparable.
+// HashNote fingerprints the backend note using the same projection as HashRecipe, so
+// the two are directly comparable. The image count is the note's inline markers.
 func HashNote(n Note) string {
-	return fingerprint(n.Title, ChecklistsToIngredients(n.Checklists), store.PlainTextHTML(n.BodyHTML))
+	return fingerprint(n.Title, ChecklistsToIngredients(n.Checklists), store.PlainTextHTML(n.BodyHTML),
+		len(n.Images))
 }

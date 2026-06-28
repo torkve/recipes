@@ -70,6 +70,19 @@ func stepLines(html string) []string {
 	return lines
 }
 
+// stepLinesKeepMarkers is like stepLines but preserves @@IMG@@ markers; the push path
+// uses it so inline images survive into the note body (they're placed by the provider).
+func stepLinesKeepMarkers(html string) []string {
+	withBreaks := blockBreakRE.ReplaceAllString(html, "\n")
+	var lines []string
+	for _, seg := range strings.Split(withBreaks, "\n") {
+		if t := strings.TrimSpace(store.PlainTextHTML(seg)); t != "" {
+			lines = append(lines, t)
+		}
+	}
+	return lines
+}
+
 // projectForDiff renders a recipe/note into a canonical, human-readable set of
 // lines for diffing. Both sides go through the same projection (and the same
 // ingredient model via ChecklistsToIngredients), so unchanged content yields
@@ -163,6 +176,14 @@ func (e *Engine) PlanPushDiff(ctx context.Context, userID int64) (PushPreview, e
 			}
 		}
 		item.Diff = LineDiff(remote, local)
+		// Images are excluded from the text projection, so surface the count delta as
+		// explicit +/- diff lines (one per added/removed image).
+		for k := item.RemoteImages; k < item.LocalImages; k++ {
+			item.Diff = append(item.Diff, DiffLine{Op: diffAdd, Text: "изображение"})
+		}
+		for k := item.LocalImages; k < item.RemoteImages; k++ {
+			item.Diff = append(item.Diff, DiffLine{Op: diffDel, Text: "изображение"})
+		}
 		prev.Items = append(prev.Items, item)
 	}
 	return prev, nil

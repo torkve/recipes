@@ -32,6 +32,11 @@ import (
 
 const eosSentinel = 0xFFFFFFFF // end-of-sequence position in anchor/terminator refs
 
+// titleStyleType is the paragraph style_type Apple Notes uses for a note's title
+// (its first paragraph), rendered as the large Title heading. Verified against real
+// device notes: the title's f5 entry is {len,{style_type:0, f2:4}} with no object uuid.
+const titleStyleType = 0
+
 // newNoteUUID returns a fresh 16-byte object/replica id. It is a seam so tests can
 // inject deterministic ids and byte-match real captures.
 var newNoteUUID = func() []byte {
@@ -40,29 +45,56 @@ var newNoteUUID = func() []byte {
 	return b
 }
 
-// mPara is one paragraph with its style class.
+// mImage is one inline image to splice into the note body: an Attachment record id
+// (referenced from the body) and its type UTI (e.g. "public.jpeg").
+type mImage struct {
+	attachmentID string
+	uti          string
+}
+
+// mPara is one paragraph. An image paragraph (image != nil) is the single U+FFFC
+// object-replacement rune that Apple Notes renders as the inline attachment.
 type mPara struct {
 	text      string
 	checklist bool
+	image     *mImage
 }
+
+// objReplacement is the U+FFFC placeholder that marks an inline attachment position.
+const objReplacement = "￼"
 
 // mergeableParagraphs maps a recipe to ordered paragraphs: title, then ingredient
 // blocks (a "# subtitle" becomes a non-checklist "subtitle:" line, items are
-// checklist lines), then step lines. Mirrors encodeNoteBody / groupParagraphs.
-func mergeableParagraphs(title string, ingredientBlocks [][]string, steps string) []mPara {
-	paras := []mPara{{title, false}}
+// checklist lines), then step lines. Inline-image markers (@@IMG:...@@, imgTokenRE)
+// in the steps become their own image paragraphs, consuming images in order.
+// Mirrors encodeNoteBody / groupParagraphs (and parseNoteBody on the read side).
+func mergeableParagraphs(title string, ingredientBlocks [][]string, steps string, images map[string]mImage) []mPara {
+	paras := []mPara{{text: title}}
 	for _, block := range ingredientBlocks {
 		for _, item := range block {
 			if sub, ok := strings.CutPrefix(item, "# "); ok {
-				paras = append(paras, mPara{sub + ":", false})
+				paras = append(paras, mPara{text: sub + ":"})
 				continue
 			}
-			paras = append(paras, mPara{item, true})
+			paras = append(paras, mPara{text: item, checklist: true})
 		}
 	}
 	for _, line := range strings.Split(steps, "\n") {
-		if strings.TrimSpace(line) != "" {
-			paras = append(paras, mPara{line, false})
+		parts := imgTokenRE.Split(line, -1)
+		markers := imgTokenRE.FindAllString(line, -1)
+		for i, part := range parts {
+			if strings.TrimSpace(part) != "" {
+				paras = append(paras, mPara{text: part})
+			}
+			if i < len(markers) {
+				// Marker is @@IMG:<id>@@; look the image up by id. An unknown id (e.g.
+				// the file was missing or its upload failed) drops the marker silently.
+				id := strings.TrimSuffix(strings.TrimPrefix(markers[i], "@@IMG:"), "@@")
+				if img, ok := images[id]; ok {
+					img := img
+					paras = append(paras, mPara{text: objReplacement, image: &img})
+				}
+			}
 		}
 	}
 	return paras
@@ -121,7 +153,29 @@ func appendParaStyle(note []byte, length uint64, styleType int, uuid []byte) []b
 	return protowire.AppendBytes(note, entry)
 }
 
-func appendObjectTable(note []byte, uuid []byte, textRunes, objCount uint64) []byte {
+// appendAttachmentEntry appends an f5 entry for a one-rune (U+FFFC) inline image:
+// {f1:1, f12:{f1:attachmentID, f2:type_uti}} — exactly what parseNoteBody reads as an
+// attachment_info on a field-5 entry.
+func appendAttachmentEntry(note []byte, attachmentID, uti string) []byte {
+	var ai []byte
+	ai = protowire.AppendTag(ai, 1, protowire.BytesType)
+	ai = protowire.AppendBytes(ai, []byte(attachmentID))
+	ai = protowire.AppendTag(ai, 2, protowire.BytesType)
+	ai = protowire.AppendBytes(ai, []byte(uti))
+
+	var entry []byte
+	entry = protowire.AppendTag(entry, 1, protowire.VarintType)
+	entry = protowire.AppendVarint(entry, 1) // the single U+FFFC rune
+	entry = protowire.AppendTag(entry, 12, protowire.BytesType)
+	entry = protowire.AppendBytes(entry, ai)
+
+	note = protowire.AppendTag(note, 5, protowire.BytesType)
+	return protowire.AppendBytes(note, entry)
+}
+
+// objTableEntry builds one f4 object-table entry for a replica:
+// {f1:16-byte replicaUUID, f2:{f1:counter1}, f2:{f1:counter2}}.
+func objTableEntry(uuid []byte, c1, c2 uint64) []byte {
 	counter := func(v uint64) []byte {
 		var c []byte
 		c = protowire.AppendTag(c, 1, protowire.VarintType)
@@ -131,34 +185,59 @@ func appendObjectTable(note []byte, uuid []byte, textRunes, objCount uint64) []b
 	entry = protowire.AppendTag(entry, 1, protowire.BytesType)
 	entry = protowire.AppendBytes(entry, uuid)
 	entry = protowire.AppendTag(entry, 2, protowire.BytesType)
-	entry = protowire.AppendBytes(entry, counter(textRunes))
+	entry = protowire.AppendBytes(entry, counter(c1))
 	entry = protowire.AppendTag(entry, 2, protowire.BytesType)
-	entry = protowire.AppendBytes(entry, counter(objCount))
+	entry = protowire.AppendBytes(entry, counter(c2))
+	return entry
+}
 
+// appendObjectTable appends note.f4 (the per-replica version-vector table) from the
+// given entries. Each entry is either freshly built by objTableEntry or a foreign
+// replica entry passed through verbatim (preserving another device's clock on an
+// in-place update).
+func appendObjectTable(note []byte, entries [][]byte) []byte {
 	var tbl []byte
-	tbl = protowire.AppendTag(tbl, 1, protowire.BytesType)
-	tbl = protowire.AppendBytes(tbl, entry)
+	for _, e := range entries {
+		tbl = protowire.AppendTag(tbl, 1, protowire.BytesType)
+		tbl = protowire.AppendBytes(tbl, e)
+	}
 	note = protowire.AppendTag(note, 4, protowire.BytesType)
 	return protowire.AppendBytes(note, tbl)
 }
 
+// replicaState is the f4 object-table state to emit on an in-place update: the
+// foreign replica entries to preserve verbatim (other devices' clocks), plus our own
+// replica's UUID and the base counters to advance from (our replica's current values
+// in the note, or zero if absent). The encoder sets our emitted counters to
+// base + current content size, which is strictly greater than the base — so the
+// resulting version vector dominates the device's last-seen state and the update
+// propagates. A nil *replicaState means a fresh document (single new replica clocked
+// at the current content size) — the create path.
+type replicaState struct {
+	foreign        [][]byte // opaque foreign replica entries, emitted byte-for-byte
+	uuid           []byte   // our replica UUID
+	baseC1, baseC2 uint64   // our replica's current counters (advanced by content size)
+}
+
 // buildMergeableNoteProto returns the uncompressed top-level mergeable note proto.
 // It is separated from compression so tests can byte-match it against real captures
-// (zlib output itself is not reproducible).
-func buildMergeableNoteProto(title string, ingredientBlocks [][]string, steps string) []byte {
-	paras := mergeableParagraphs(title, ingredientBlocks, steps)
+// (zlib output itself is not reproducible). rep is nil for a create (fresh single
+// replica) or carries the preserved+advanced version vector for an in-place update.
+func buildMergeableNoteProto(title string, ingredientBlocks [][]string, steps string, images map[string]mImage, rep *replicaState) []byte {
+	paras := mergeableParagraphs(title, ingredientBlocks, steps, images)
 
 	// note_text: each paragraph + "\n", then one trailing "\n" (empty paragraph).
 	var sb strings.Builder
 	type seg struct {
 		runes     int
 		checklist bool
+		image     *mImage
 	}
 	var segs []seg
 	for _, p := range paras {
 		line := p.text + "\n"
 		sb.WriteString(line)
-		segs = append(segs, seg{utf8.RuneCountInString(line), p.checklist})
+		segs = append(segs, seg{utf8.RuneCountInString(line), p.checklist, p.image})
 	}
 	sb.WriteString("\n")
 	text := sb.String()
@@ -173,7 +252,7 @@ func buildMergeableNoteProto(title string, ingredientBlocks [][]string, steps st
 	note = appendRun(note, 0, 0, 0, 0, 0, 1, true)
 	op := uint64(2)
 	pos := uint64(0)
-	runSegs := append(append([]seg{}, segs...), seg{1, false}) // + trailing empty paragraph
+	runSegs := append(append([]seg{}, segs...), seg{1, false, nil}) // + trailing empty paragraph
 	for i := 0; i < len(runSegs); {
 		cls := runSegs[i].checklist
 		total := 0
@@ -193,28 +272,54 @@ func buildMergeableNoteProto(title string, ingredientBlocks [][]string, steps st
 	}
 	note = appendRun(note, 0, eosSentinel, 0, 0, eosSentinel, 0, false)
 
-	// Object table (f4): replica UUID + [textRunes, objCount].
+	// Object table (f4): replica UUID + [textRunes, objCount]. Each checklist item and
+	// each inline image is an object.
 	objCount := 0
 	for _, s := range segs {
-		if s.checklist {
+		if s.checklist || s.image != nil {
 			objCount++
 		}
 	}
 	if objCount == 0 {
 		objCount = 1
 	}
-	note = appendObjectTable(note, newNoteUUID(), uint64(textRunes), uint64(objCount))
+	var objEntries [][]byte
+	if rep == nil {
+		// Fresh document: a single new replica clocked at the current content size.
+		objEntries = [][]byte{objTableEntry(newNoteUUID(), uint64(textRunes), uint64(objCount))}
+	} else {
+		// In-place update: keep every other device's replica entry verbatim and add our
+		// own advanced past its base (base + content size > base), so the vector strictly
+		// dominates the device's last-seen and the update propagates.
+		objEntries = append(objEntries, rep.foreign...)
+		objEntries = append(objEntries,
+			objTableEntry(rep.uuid, rep.baseC1+uint64(textRunes), rep.baseC2+uint64(objCount)))
+	}
+	note = appendObjectTable(note, objEntries)
 
-	// Style table (f5): default groups as bare entries, each checklist line as its
-	// own object entry, then the explicit tail for the trailing empty paragraph.
-	for k := 0; k < len(segs); {
+	// Style table (f5): the title (first paragraph) carries the Apple "Title" style; then
+	// default groups as bare entries, each checklist line as its own object entry, each
+	// inline image as an attachment entry (U+FFFC) + a bare entry for its trailing newline,
+	// then the explicit tail for the trailing empty paragraph.
+	k := 0
+	if len(segs) > 0 {
+		note = appendParaStyle(note, uint64(segs[0].runes), titleStyleType, nil) // Title
+		k = 1
+	}
+	for k < len(segs) {
+		if segs[k].image != nil {
+			note = appendAttachmentEntry(note, segs[k].image.attachmentID, segs[k].image.uti) // U+FFFC
+			note = appendParaStyle(note, uint64(segs[k].runes-1), -1, nil)                    // its "\n"
+			k++
+			continue
+		}
 		if segs[k].checklist {
 			note = appendParaStyle(note, uint64(segs[k].runes), checklistStyleType, newNoteUUID())
 			k++
 			continue
 		}
 		total := 0
-		for k < len(segs) && !segs[k].checklist {
+		for k < len(segs) && !segs[k].checklist && segs[k].image == nil {
 			total += segs[k].runes
 			k++
 		}
@@ -240,10 +345,11 @@ func buildMergeableNoteProto(title string, ingredientBlocks [][]string, steps st
 }
 
 // encodeMergeableNoteBody builds the zlib-compressed mergeable note body for a recipe.
-func encodeMergeableNoteBody(title string, ingredientBlocks [][]string, steps string) ([]byte, error) {
+// images are spliced in at the @@IMG@@ markers in steps, in order.
+func encodeMergeableNoteBody(title string, ingredientBlocks [][]string, steps string, images map[string]mImage, rep *replicaState) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zlib.NewWriter(&buf)
-	if _, err := zw.Write(buildMergeableNoteProto(title, ingredientBlocks, steps)); err != nil {
+	if _, err := zw.Write(buildMergeableNoteProto(title, ingredientBlocks, steps, images, rep)); err != nil {
 		return nil, err
 	}
 	if err := zw.Close(); err != nil {
@@ -286,4 +392,44 @@ func parseMergeableNoteBody(blob []byte) (blocks [][]string, steps string, ok bo
 		}
 	})
 	return groupParagraphs(runes, styleAt, map[int]string{})
+}
+
+// parseObjectTable extracts the f4 object-table replica entries from a mergeable
+// note body, each as a copied opaque byte slice (to be re-emitted verbatim on an
+// in-place update). ok is false when the body can't be inflated/parsed or carries
+// no object table — the caller then cannot build a dominating version vector and
+// must fall back (soft-delete + recreate).
+func parseObjectTable(blob []byte) (entries [][]byte, ok bool) {
+	data, err := inflate(blob)
+	if err != nil {
+		return nil, false
+	}
+	note := pbBytes(pbBytes(data, 2), 3) // NoteStoreProto.document=2, Document.note=3
+	tbl := pbBytes(note, 4)              // Note.object_table=4
+	if tbl == nil {
+		return nil, false
+	}
+	pbEachBytes(tbl, 1, func(e []byte) {
+		entries = append(entries, append([]byte(nil), e...)) // copy: e aliases data
+	})
+	if len(entries) == 0 {
+		return nil, false
+	}
+	return entries, true
+}
+
+// objEntryUUID returns the 16-byte replica UUID of an object-table entry, or nil.
+func objEntryUUID(entry []byte) []byte { return pbBytes(entry, 1) }
+
+// objEntryCounters returns the two version counters (f2 repeated twice, each {f1}).
+func objEntryCounters(entry []byte) (c1, c2 uint64) {
+	var cs []uint64
+	pbEachBytes(entry, 2, func(b []byte) { cs = append(cs, pbVarint(b, 1)) })
+	if len(cs) > 0 {
+		c1 = cs[0]
+	}
+	if len(cs) > 1 {
+		c2 = cs[1]
+	}
+	return
 }

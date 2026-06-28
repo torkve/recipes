@@ -51,13 +51,32 @@ func TestHashRecipeNoteEquivalenceWithImage(t *testing.T) {
 		Ingredients: []models.IngredientBlock{{Items: []string{"картофель"}}},
 		StepsHTML:   `<p>Натереть.</p><img src="/uploads/abc.jpg" alt=""><p>Жарить.</p>`,
 	}
+	// The note carries its inline image in Images (as recordToNote populates it from
+	// the body markers); both sides then have one image, so they hash equal.
 	n := Note{
 		Title:      "Брамбораки",
 		Checklists: [][]string{{"картофель"}},
 		BodyHTML:   "Натереть.\n@@IMG:CF8663E7-8ED6-44DA-8B6A-B508AAFBC808@@\nЖарить.",
+		Images:     []NoteImage{{ID: "CF8663E7-8ED6-44DA-8B6A-B508AAFBC808"}},
 	}
 	if HashRecipe(r) != HashNote(n) {
 		t.Fatalf("imaged hash mismatch:\n recipe=%s\n note  =%s", HashRecipe(r), HashNote(n))
+	}
+}
+
+// Adding an image is a detected change (the user's case): the same recipe with vs
+// without an inline <img> must hash differently so the push is triggered.
+func TestHashRecipeImageCountChange(t *testing.T) {
+	base := &models.Recipe{Title: "Торт", StepsHTML: "<p>Испечь.</p>"}
+	withImg := &models.Recipe{Title: "Торт", StepsHTML: `<p>Испечь.</p><img src="/uploads/x.jpg">`}
+	if HashRecipe(base) == HashRecipe(withImg) {
+		t.Fatal("adding an image must change the recipe hash")
+	}
+	// The image-less hash must be unchanged by the count addition (no rebaseline):
+	// it equals the hash of the equivalent note with no images.
+	n := Note{Title: "Торт", BodyHTML: "Испечь."}
+	if HashRecipe(base) != HashNote(n) {
+		t.Fatalf("image-less hash drifted:\n recipe=%s\n note  =%s", HashRecipe(base), HashNote(n))
 	}
 }
 

@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/torkve/icloud-notes/icloud"
+
 	"recipes/internal/auth"
 	"recipes/internal/config"
 	"recipes/internal/embed"
-	"recipes/internal/icloud"
+	"recipes/internal/icloudadapter"
 	"recipes/internal/notesync"
 	"recipes/internal/search"
 	"recipes/internal/store"
@@ -69,7 +71,7 @@ func run() error {
 	// reverse-engineered iCloud client ships dark until configured.
 	var engine *notesync.Engine
 	if cfg.ICloudEnabled {
-		provider := icloud.New(nil, cfg.ICloudSRPVariant)
+		provider := icloudadapter.New(icloud.WithSRPVariant(cfg.ICloudSRPVariant))
 		engine, err = notesync.NewEngine(st, provider, provider, keys.SyncEnc, cfg.UploadsDir())
 		if err != nil {
 			return err

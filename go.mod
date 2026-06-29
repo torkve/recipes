@@ -31,4 +31,7 @@ require (
 // API-compatible for it.
 replace golang.org/x/net => golang.org/x/net v0.51.0
 
-require golang.org/x/net v0.54.0 // indirect
+require (
+	github.com/torkve/icloud-notes v1.0.0
+	golang.org/x/net v0.54.0 // indirect
+)

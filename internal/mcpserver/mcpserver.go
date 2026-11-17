@@ -30,11 +30,14 @@ const (
 	maxListLimit       = 100
 	defaultSearchLimit = 20
 	maxSearchLimit     = 50
+	// maxRequestBytes bounds one MCP request: room for an 8 MiB image sent to
+	// upload_image as a base64 data: URI.
+	maxRequestBytes = 12 << 20
 )
 
 const instructions = `Family cookbook. Recipes are mostly written in Russian.
 Use search_recipes to find recipes by dish, ingredient or description (it matches meaning, not only words), list_categories and list_recipes to browse, and get_recipe for the full recipe. Recipe steps are Markdown.
-Before creating a recipe, search for an existing one with the same dish to avoid duplicates. To edit, call get_recipe first and pass its revision to update_recipe.`
+Before creating a recipe, search for an existing one with the same dish to avoid duplicates. To edit, call get_recipe first and pass its revision to update_recipe. To add a photo, call upload_image and put the returned Markdown into steps_markdown.`
 
 // Deps are the services the tools use.
 type Deps struct {
@@ -50,6 +53,9 @@ type Deps struct {
 	// UserID returns the user the request in ctx acts for, recorded as the owner
 	// of created recipes. Nil records no owner.
 	UserID func(ctx context.Context) (int64, bool)
+	// FetchImage returns the bytes behind an image URL or data: URI supplied by
+	// the client. Nil disables upload_image.
+	FetchImage func(ctx context.Context, url string) ([]byte, error)
 }
 
 // New builds the MCP server with the cookbook tools registered.
@@ -101,6 +107,7 @@ func New(d Deps) *mcp.Server {
 			"Pass the revision from get_recipe as expected_revision; if the recipe changed since, the update is rejected and you should re-read it.",
 		Annotations: &mcp.ToolAnnotations{Title: "Update recipe", IdempotentHint: true, OpenWorldHint: &closed},
 	}, t.updateRecipe)
+	t.addImageTool(s)
 	return s
 }
 
@@ -113,7 +120,10 @@ func New(d Deps) *mcp.Server {
 func Handler(s *mcp.Server) http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return s },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true},
+		&mcp.StreamableHTTPOptions{
+			Stateless: true, JSONResponse: true, DisableLocalhostProtection: true,
+			MaxRequestBodyBytes: maxRequestBytes,
+		},
 	)
 }
 

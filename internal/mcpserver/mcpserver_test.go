@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,15 @@ func setup(t *testing.T) *fixture {
 		Store: st, Search: search.New(st, nil, 0), Cookbook: cookbook.New(st, t.TempDir()), BaseURL: base,
 		CanWrite: func(context.Context) bool { return f.canWrite.Load() },
 		UserID:   func(context.Context) (int64, bool) { return f.owner, true },
+		FetchImage: func(_ context.Context, u string) ([]byte, error) {
+			switch u {
+			case "https://img.example/cat.png":
+				return []byte("\x89PNG\r\n\x1a\n0000"), nil
+			case "https://img.example/page.html":
+				return []byte("<html>not an image</html>"), nil
+			}
+			return nil, errors.New("blocked")
+		},
 	})
 	ts := httptest.NewServer(Handler(srv))
 	t.Cleanup(ts.Close)
@@ -135,6 +145,7 @@ func TestToolAnnotations(t *testing.T) {
 		"get_recipe":      {true, false},
 		"create_recipe":   {false, false},
 		"update_recipe":   {false, true},
+		"upload_image":    {false, false},
 	}
 	if len(res.Tools) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(res.Tools), len(want))
@@ -328,4 +339,62 @@ func TestGetRecipe(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestUploadImage(t *testing.T) {
+	f := setup(t)
+	var up uploadImageOut
+	if msg := f.call(t, "upload_image", map[string]any{"url": "https://img.example/cat.png"}, &up); !strings.Contains(msg, "read-only") {
+		t.Fatalf("upload without write access: error %q", msg)
+	}
+	f.canWrite.Store(true)
+
+	// ChatGPT-style file parameter.
+	if msg := f.call(t, "upload_image", map[string]any{"file": map[string]any{"download_url": "https://img.example/cat.png", "file_id": "f1"}}, &up); msg != "" {
+		t.Fatal(msg)
+	}
+	if !strings.HasPrefix(up.URL, base+"/uploads/") || !strings.HasSuffix(up.URL, ".png") || up.Markdown != "![]("+up.URL+")" {
+		t.Fatalf("upload result = %+v", up)
+	}
+
+	var rec recipe
+	if msg := f.call(t, "create_recipe", map[string]any{
+		"title": "Кот в тесте", "category_id": f.baking.ID, "steps_markdown": "Испечь.\n\n" + up.Markdown,
+	}, &rec); msg != "" {
+		t.Fatal(msg)
+	}
+	if len(rec.ImageURLs) != 1 || rec.ImageURLs[0] != up.URL || !strings.Contains(rec.StepsMarkdown, up.URL) {
+		t.Fatalf("image not attached: urls %v steps %q", rec.ImageURLs, rec.StepsMarkdown)
+	}
+
+	cases := map[string]map[string]any{
+		"not a supported image":   {"url": "https://img.example/page.html"},
+		"could not get the image": {"url": "https://internal.example/x.png"},
+		"url or file is required": {},
+		"either url or file":      {"url": "https://img.example/cat.png", "file": map[string]any{"download_url": "https://img.example/cat.png"}},
+	}
+	for want, args := range cases {
+		if msg := f.call(t, "upload_image", args, &up); !strings.Contains(msg, want) {
+			t.Errorf("%v: error %q, want %q", args, msg, want)
+		}
+	}
+}
+
+func TestUploadImageAdvertisesFileParam(t *testing.T) {
+	f := setup(t)
+	res, err := f.cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name != "upload_image" {
+			continue
+		}
+		b, _ := json.Marshal(tool.Meta["openai/fileParams"])
+		if string(b) != `["file"]` {
+			t.Fatalf("openai/fileParams = %s, want [\"file\"]", b)
+		}
+		return
+	}
+	t.Fatal("upload_image not listed")
 }

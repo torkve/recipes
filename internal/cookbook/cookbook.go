@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"recipes/internal/models"
 	"recipes/internal/sanitize"
@@ -199,6 +202,41 @@ func (s *Service) checkImageOwnership(ctx context.Context, selfID int64, stepsHT
 		return fmt.Errorf("%w: %s", ErrForeignImage, strings.Join(foreign, ", "))
 	}
 	return nil
+}
+
+// MaxUploadBytes is the size limit of one uploaded image.
+const MaxUploadBytes = 8 << 20
+
+// ErrUnsupportedImage is returned by SaveUpload for data that is not a PNG,
+// JPEG, GIF or WebP image, or is larger than MaxUploadBytes.
+var ErrUnsupportedImage = errors.New("cookbook: not a supported image (png, jpeg, gif, webp up to 8 MiB)")
+
+// extByType maps a sniffed image content type to its upload file extension.
+var extByType = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
+// SaveUpload stores an image as a new unattached upload and returns its file
+// name; steps reference it as /uploads/<name>, which attaches it to the recipe
+// on save. The type is sniffed from the content, not taken from the caller.
+func (s *Service) SaveUpload(data []byte) (string, error) {
+	if len(data) == 0 || len(data) > MaxUploadBytes {
+		return "", ErrUnsupportedImage
+	}
+	ext, ok := extByType[http.DetectContentType(data)]
+	if !ok {
+		return "", ErrUnsupportedImage
+	}
+	name := uuid.NewString() + ext
+	dst := filepath.Join(s.uploadsDir, name)
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	return name, nil
 }
 
 // typeByExt maps an upload's extension to its content type.

@@ -1,18 +1,13 @@
 package web
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
 
 	"recipes/internal/cookbook"
 	"recipes/internal/models"
@@ -20,21 +15,10 @@ import (
 	"recipes/internal/store"
 )
 
-const maxUploadBytes = 8 << 20 // 8 MiB per pasted image
-
-// extByType maps a sniffed image content type to a file extension. Only these
-// image types are accepted for upload.
-var extByType = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-}
-
 // handleUpload stores a pasted image and returns its public URL as JSON.
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+512)
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, cookbook.MaxUploadBytes+64<<10)
+	if err := r.ParseMultipartForm(cookbook.MaxUploadBytes); err != nil {
 		http.Error(w, "файл слишком большой", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -50,33 +34,21 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-
-	// Sniff the content type from the first 512 bytes.
-	head := make([]byte, 512)
-	n, _ := io.ReadFull(file, head)
-	head = head[:n]
-	ct := http.DetectContentType(head)
-	ext, ok := extByType[ct]
-	if !ok {
+	data, err := io.ReadAll(io.LimitReader(file, cookbook.MaxUploadBytes+1))
+	if err != nil {
+		http.Error(w, "ошибка чтения", http.StatusBadRequest)
+		return
+	}
+	if len(data) > cookbook.MaxUploadBytes {
+		http.Error(w, "файл слишком большой", http.StatusRequestEntityTooLarge)
+		return
+	}
+	name, err := s.cookbook.SaveUpload(data)
+	if errors.Is(err, cookbook.ErrUnsupportedImage) {
 		http.Error(w, "неподдерживаемый тип изображения", http.StatusUnsupportedMediaType)
 		return
 	}
-
-	name := uuid.NewString() + ext
-	dst := filepath.Join(s.cfg.UploadsDir(), name)
-	out, err := os.Create(dst)
 	if err != nil {
-		http.Error(w, "ошибка сохранения", http.StatusInternalServerError)
-		return
-	}
-	if _, err := io.Copy(out, io.MultiReader(bytes.NewReader(head), file)); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		http.Error(w, "ошибка сохранения", http.StatusInternalServerError)
-		return
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst)
 		http.Error(w, "ошибка сохранения", http.StatusInternalServerError)
 		return
 	}

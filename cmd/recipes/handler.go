@@ -9,6 +9,7 @@ import (
 
 	"recipes/internal/config"
 	"recipes/internal/cookbook"
+	"recipes/internal/imagefetch"
 	"recipes/internal/mcpserver"
 	"recipes/internal/oauth"
 	"recipes/internal/search"
@@ -20,12 +21,13 @@ import (
 // OAuth scope and attributing created recipes to the token's user.
 func newMCPServer(st *store.Store, searchSvc *search.Service, cfg *config.Config) *mcp.Server {
 	return mcpserver.New(mcpserver.Deps{
-		Store:    st,
-		Search:   searchSvc,
-		Cookbook: cookbook.New(st, cfg.UploadsDir()),
-		BaseURL:  cfg.PublicURL,
-		CanWrite: func(ctx context.Context) bool { return oauth.HasScope(ctx, oauth.ScopeWrite) },
-		UserID:   oauth.UserID,
+		Store:      st,
+		Search:     searchSvc,
+		Cookbook:   cookbook.New(st, cfg.UploadsDir()),
+		BaseURL:    cfg.PublicURL,
+		CanWrite:   func(ctx context.Context) bool { return oauth.HasScope(ctx, oauth.ScopeWrite) },
+		UserID:     oauth.UserID,
+		FetchImage: imagefetch.New(cookbook.MaxUploadBytes).Get,
 	})
 }
 

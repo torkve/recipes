@@ -18,6 +18,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/torkve/icloud-notes v1.0.0 h1:eLN2LMrhra4ugNHxWrxa8pkApuyOfZ3FWh2S2fYaZJo=
 github.com/torkve/icloud-notes v1.0.0/go.mod h1:Pr3w373UaEYI7CX3AFm37Tnco1shRsiJbZ3E/H6AKtY=
+github.com/yuin/goldmark v1.8.7 h1:XT/tNqCIbabh0ln675w4x3dv04kQBKi8NwYqi9IJaxI=
+github.com/yuin/goldmark v1.8.7/go.mod h1:ip/1k0VRfGynBgxOz0yCqHrbZXhcjxyuS66Brc7iBKg=
 golang.org/x/crypto v0.52.0 h1:RMs7fP2rXdep0CftQlK8Uf+kibLm7qkCcradZWYz988=
 golang.org/x/crypto v0.52.0/go.mod h1:1QgfPxDqh0T2M/elOJtp9RvuR95kVjir0e6/BvEmGbc=
 golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa h1:Zt3DZoOFFYkKhDT3v7Lm9FDMEV06GpzjG2jrqW+QTE0=

@@ -116,7 +116,7 @@ func TestEmbeddingsStore(t *testing.T) {
 		t.Fatalf("missing before upsert = %v, want [%d]", miss, rec.ID)
 	}
 	// Upsert, then it's present and loadable with the category.
-	if err := s.UpsertEmbedding(ctx, rec.ID, model, len(vec), vec); err != nil {
+	if err := s.UpsertEmbedding(ctx, rec.ID, rec.Revision, model, len(vec), vec); err != nil {
 		t.Fatal(err)
 	}
 	if miss, _ := s.RecipeIDsMissingEmbedding(ctx, model); len(miss) != 0 {
@@ -131,7 +131,7 @@ func TestEmbeddingsStore(t *testing.T) {
 		t.Fatalf("stale-model missing = %v, want 1", miss)
 	}
 	// RecipeEmbedInput flattens title+ingredients+steps.
-	txt, ok, err := s.RecipeEmbedInput(ctx, rec.ID)
+	txt, _, ok, err := s.RecipeEmbedInput(ctx, rec.ID)
 	if err != nil || !ok || !strings.Contains(txt, "Борщ") || !strings.Contains(txt, "свёкла") || !strings.Contains(txt, "Варить") {
 		t.Fatalf("RecipeEmbedInput = %q ok=%v err=%v", txt, ok, err)
 	}
@@ -268,5 +268,134 @@ func TestDeleteCategoryInUse(t *testing.T) {
 	}
 	if err := s.DeleteCategory(ctx, cat.ID); err != ErrCategoryInUse {
 		t.Fatalf("expected ErrCategoryInUse, got %v", err)
+	}
+}
+
+func TestUpdateRecipeRevisionAndEmbeddings(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	cat, _ := s.GetOrCreateCategory(ctx, "Супы", models.SourceManual)
+	in := RecipeInput{
+		Title: "Борщ", CategoryID: cat.ID,
+		Ingredients: []models.IngredientBlock{{Items: []string{"свёкла"}}},
+		StepsHTML:   "<p>Варить.</p>",
+	}
+	rec, err := s.CreateRecipe(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Revision != 0 {
+		t.Fatalf("new recipe revision = %d, want 0", rec.Revision)
+	}
+	const model = "m"
+	vec := []float32{1, 2}
+	if err := s.UpsertEmbedding(ctx, rec.ID, rec.Revision, model, len(vec), vec); err != nil {
+		t.Fatal(err)
+	}
+	missing := func() []int64 {
+		t.Helper()
+		ids, err := s.RecipeIDsMissingEmbedding(ctx, model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	revision := func() int64 {
+		t.Helper()
+		r, err := s.GetRecipe(ctx, rec.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Revision
+	}
+
+	// Linkage-only write: revision and embedding untouched.
+	etag := "e1"
+	linkOnly := in
+	linkOnly.ICloudEtag = &etag
+	if err := s.UpdateRecipe(ctx, rec.ID, linkOnly); err != nil {
+		t.Fatal(err)
+	}
+	if got := revision(); got != 0 {
+		t.Fatalf("revision after linkage-only write = %d, want 0", got)
+	}
+	if ids := missing(); len(ids) != 0 {
+		t.Fatalf("embedding dropped by linkage-only write: missing=%v", ids)
+	}
+
+	// Content change: revision bumps, stale embedding is dropped.
+	changed := linkOnly
+	changed.StepsHTML = "<p>Варить 2 часа.</p>"
+	if err := s.UpdateRecipe(ctx, rec.ID, changed); err != nil {
+		t.Fatal(err)
+	}
+	if got := revision(); got != 1 {
+		t.Fatalf("revision after content change = %d, want 1", got)
+	}
+	if ids := missing(); len(ids) != 1 || ids[0] != rec.ID {
+		t.Fatalf("missing after content change = %v, want [%d]", ids, rec.ID)
+	}
+
+	// Conditional update: stale revision conflicts, current one succeeds.
+	stale := int64(0)
+	cond := changed
+	cond.Title = "Борщ украинский"
+	cond.ExpectedRevision = &stale
+	if err := s.UpdateRecipe(ctx, rec.ID, cond); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale ExpectedRevision: err = %v, want ErrConflict", err)
+	}
+	cur := int64(1)
+	cond.ExpectedRevision = &cur
+	if err := s.UpdateRecipe(ctx, rec.ID, cond); err != nil {
+		t.Fatalf("current ExpectedRevision: %v", err)
+	}
+	if got := revision(); got != 2 {
+		t.Fatalf("revision after conditional update = %d, want 2", got)
+	}
+
+	if err := s.UpdateRecipe(ctx, 9999, in); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing recipe: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestEmbeddingFromOlderRevisionStaysMissing pins that a vector written for a
+// revision older than the recipe's current one does not count as current.
+func TestEmbeddingFromOlderRevisionStaysMissing(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	cat, _ := s.GetOrCreateCategory(ctx, "Супы", models.SourceManual)
+	in := RecipeInput{Title: "Борщ", CategoryID: cat.ID, StepsHTML: "<p>a</p>"}
+	rec, err := s.CreateRecipe(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, oldRev, _, err := s.RecipeEmbedInput(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.StepsHTML = "<p>b</p>"
+	if err := s.UpdateRecipe(ctx, rec.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	const model = "m"
+	if err := s.UpsertEmbedding(ctx, rec.ID, oldRev, model, 1, []float32{1}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.RecipeIDsMissingEmbedding(ctx, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != rec.ID {
+		t.Fatalf("missing = %v, want [%d] (vector is from revision %d)", ids, rec.ID, oldRev)
+	}
+	if vecs, _ := s.EmbeddingsForModel(ctx, model); len(vecs) != 0 {
+		t.Fatalf("vector from an old revision was stored: %+v", vecs)
+	}
+	_, curRev, _, _ := s.RecipeEmbedInput(ctx, rec.ID)
+	if err := s.UpsertEmbedding(ctx, rec.ID, curRev, model, 1, []float32{1}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := s.RecipeIDsMissingEmbedding(ctx, model); len(ids) != 0 {
+		t.Fatalf("missing after current-revision upsert = %v, want none", ids)
 	}
 }

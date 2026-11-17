@@ -12,4 +12,7 @@ var (
 	// ErrCycle is returned when setting a category parent would create a cycle
 	// (the parent is the category itself or one of its descendants).
 	ErrCycle = errors.New("store: category cycle")
+	// ErrConflict is returned when a conditional update finds the row at a
+	// different revision than the caller expected.
+	ErrConflict = errors.New("store: revision conflict")
 )

@@ -51,6 +51,9 @@ type Recipe struct {
 	StepsHTML   string // sanitized HTML body (text + inline <img> previews)
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Revision increments whenever the recipe content (title, category,
+	// ingredients, steps) changes; used for optimistic concurrency.
+	Revision int64
 
 	// iCloud sync linkage (nil when not synced).
 	ICloudNoteID *string

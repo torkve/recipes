@@ -1,17 +1,11 @@
 package web
 
 import (
-	"context"
-	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"recipes/internal/models"
-	"recipes/internal/store"
 )
-
-var errNoCategory = errors.New("category required")
 
 // parseIngredients builds ingredient blocks from the form. Each block has a
 // subtitle field (ing_subtitle) and a newline-separated items textarea
@@ -46,34 +40,4 @@ func parseIngredients(r *http.Request) []models.IngredientBlock {
 		blocks = append(blocks, models.IngredientBlock{Subtitle: subtitle, Items: items})
 	}
 	return blocks
-}
-
-// resolveCategory returns the category id for the submitted form, creating a new
-// category when the free-text "new_category" field is filled (taking precedence
-// over the select). Returns errNoCategory when neither is provided.
-func (s *Server) resolveCategory(ctx context.Context, r *http.Request) (int64, error) {
-	if newName := strings.TrimSpace(r.PostFormValue("new_category")); newName != "" {
-		cat, err := s.store.GetOrCreateCategory(ctx, newName, models.SourceManual)
-		if err != nil {
-			return 0, err
-		}
-		return cat.ID, nil
-	}
-
-	idStr := strings.TrimSpace(r.PostFormValue("category_id"))
-	if idStr == "" {
-		return 0, errNoCategory
-	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return 0, errNoCategory
-	}
-	// Validate the category exists.
-	if _, err := s.store.GetCategory(ctx, id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return 0, errNoCategory
-		}
-		return 0, err
-	}
-	return id, nil
 }

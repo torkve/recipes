@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"recipes/internal/cookbook"
 	"recipes/internal/models"
 	"recipes/internal/sanitize"
 	"recipes/internal/store"
@@ -28,15 +29,6 @@ var extByType = map[string]string{
 	"image/jpeg": ".jpg",
 	"image/gif":  ".gif",
 	"image/webp": ".webp",
-}
-
-// typeByExt is the reverse lookup used when recording reconciled images.
-var typeByExt = map[string]string{
-	".png":  "image/png",
-	".jpg":  "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif":  "image/gif",
-	".webp": "image/webp",
 }
 
 // handleUpload stores a pasted image and returns its public URL as JSON.
@@ -299,26 +291,17 @@ func (s *Server) handleRecipeCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	in, msg := s.recipeInputFromForm(r)
-	if msg != "" {
-		selID, newCat := formCategorySelection(r)
-		s.renderRecipeForm(w, r, nil, recipeForm{
-			Title: in.Title, Ingredients: in.Ingredients, StepsHTML: in.StepsHTML,
-			SelectedCategoryID: selID, NewCategory: newCat, Error: msg,
-		}, http.StatusBadRequest)
-		return
+	f := recipeFormFromRequest(r)
+	d := cookbook.Draft{
+		Title: f.Title, Category: f.categoryRef(), Ingredients: f.Ingredients, StepsHTML: f.StepsHTML,
 	}
 	// Attribute the recipe to its creator so it can be pushed to their iCloud.
 	if u := currentUser(r); u != nil {
-		in.OwnerID = &u.ID
+		d.OwnerID = &u.ID
 	}
-	rec, err := s.store.CreateRecipe(r.Context(), in)
+	rec, err := s.cookbook.Create(r.Context(), d)
 	if err != nil {
-		s.serverError(w, err)
-		return
-	}
-	if err := s.reconcileImages(r, rec.ID, in.StepsHTML); err != nil {
-		s.serverError(w, err)
+		s.recipeSaveError(w, r, nil, f, err)
 		return
 	}
 	http.Redirect(w, r, "/recipes/"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
@@ -334,26 +317,13 @@ func (s *Server) handleRecipeUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	in, msg := s.recipeInputFromForm(r)
-	if msg != "" {
-		selID, newCat := formCategorySelection(r)
-		s.renderRecipeForm(w, r, rec, recipeForm{
-			Title: in.Title, Ingredients: in.Ingredients, StepsHTML: in.StepsHTML,
-			SelectedCategoryID: selID, NewCategory: newCat, Error: msg,
-		}, http.StatusBadRequest)
-		return
+	f := recipeFormFromRequest(r)
+	cat := f.categoryRef()
+	p := cookbook.Patch{
+		Title: &f.Title, Category: &cat, Ingredients: &f.Ingredients, StepsHTML: &f.StepsHTML,
 	}
-	// Preserve iCloud linkage on update.
-	in.ICloudNoteID = rec.ICloudNoteID
-	in.ICloudEtag = rec.ICloudEtag
-	in.OwnerID = rec.OwnerID
-
-	if err := s.store.UpdateRecipe(r.Context(), rec.ID, in); err != nil {
-		s.serverError(w, err)
-		return
-	}
-	if err := s.reconcileImages(r, rec.ID, in.StepsHTML); err != nil {
-		s.serverError(w, err)
+	if _, err := s.cookbook.Update(r.Context(), rec.ID, p, nil); err != nil {
+		s.recipeSaveError(w, r, rec, f, err)
 		return
 	}
 	http.Redirect(w, r, "/recipes/"+strconv.FormatInt(rec.ID, 10), http.StatusSeeOther)
@@ -366,7 +336,7 @@ func (s *Server) handleRecipeDelete(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	files, err := s.store.DeleteRecipe(r.Context(), id)
+	err := s.cookbook.Delete(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -375,77 +345,48 @@ func (s *Server) handleRecipeDelete(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	for _, f := range files {
-		s.removeUpload(f)
-	}
 	http.Redirect(w, r, "/admin/recipes", http.StatusSeeOther)
 }
 
-// recipeInputFromForm builds a RecipeInput from the form, returning a non-empty
-// validation message on bad input.
-func (s *Server) recipeInputFromForm(r *http.Request) (store.RecipeInput, string) {
-	title := strings.TrimSpace(r.PostFormValue("title"))
-	in := store.RecipeInput{
-		Title:       title,
-		Ingredients: parseIngredients(r),
-		StepsHTML:   sanitize.StepsHTML(r.PostFormValue("steps_html")),
+// recipeFormFromRequest reads the submitted recipe form. StepsHTML is the raw,
+// unsanitized field value.
+func recipeFormFromRequest(r *http.Request) recipeForm {
+	selID, newCat := formCategorySelection(r)
+	return recipeForm{
+		Title:              strings.TrimSpace(r.PostFormValue("title")),
+		Ingredients:        parseIngredients(r),
+		StepsHTML:          r.PostFormValue("steps_html"),
+		SelectedCategoryID: selID,
+		NewCategory:        newCat,
 	}
-	if title == "" {
-		return in, "Укажите название блюда"
-	}
-	catID, err := s.resolveCategory(r.Context(), r)
-	if err != nil {
-		if errors.Is(err, errNoCategory) {
-			return in, "Выберите или введите категорию"
-		}
-		return in, "Не удалось определить категорию"
-	}
-	in.CategoryID = catID
-	return in, ""
 }
 
-// reconcileImages makes recipe_images match the images referenced in the saved
-// steps HTML: it records newly-referenced uploads and deletes rows + files for
-// uploads no longer referenced.
-func (s *Server) reconcileImages(r *http.Request, recipeID int64, html string) error {
-	ctx := r.Context()
-	referenced := sanitize.ImageFilenames(html)
-	refSet := make(map[string]bool, len(referenced))
-	for _, n := range referenced {
-		refSet[n] = true
-	}
-
-	existing, err := s.store.ImagesForRecipe(ctx, recipeID)
-	if err != nil {
-		return err
-	}
-	existingSet := make(map[string]bool, len(existing))
-	for _, img := range existing {
-		existingSet[img.Filename] = true
-		if !refSet[img.Filename] {
-			if err := s.store.DeleteImageByName(ctx, recipeID, img.Filename); err != nil {
-				return err
-			}
-			s.removeUpload(img.Filename)
-		}
-	}
-	for _, name := range referenced {
-		if !existingSet[name] {
-			ct := typeByExt[strings.ToLower(filepath.Ext(name))]
-			if _, err := s.store.AddImage(ctx, recipeID, name, ct); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+// categoryRef selects the typed new category when filled, else the chosen one.
+func (f recipeForm) categoryRef() cookbook.CategoryRef {
+	return cookbook.CategoryRef{ID: f.SelectedCategoryID, Name: f.NewCategory}
 }
 
-// removeUpload deletes an uploaded file, guarding against path traversal.
-func (s *Server) removeUpload(name string) {
-	if !sanitize.IsValidUploadName(name) {
+// recipeSaveError redraws the form with a message for validation errors from
+// the cookbook service, or responds 404/500 for the rest. rec is nil on create.
+func (s *Server) recipeSaveError(w http.ResponseWriter, r *http.Request, rec *models.Recipe, f recipeForm, err error) {
+	switch {
+	case errors.Is(err, cookbook.ErrTitleRequired):
+		f.Error = "Укажите название блюда"
+	case errors.Is(err, cookbook.ErrCategoryRequired):
+		f.Error = "Выберите или введите категорию"
+	case errors.Is(err, cookbook.ErrForeignImage):
+		f.Error = "Изображение уже используется в другом рецепте"
+	case errors.Is(err, store.ErrConflict):
+		f.Error = "Рецепт был изменён одновременно с вами — обновите страницу и повторите правку"
+	case errors.Is(err, store.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	default:
+		s.serverError(w, err)
 		return
 	}
-	_ = os.Remove(filepath.Join(s.cfg.UploadsDir(), name))
+	f.StepsHTML = sanitize.StepsHTML(f.StepsHTML)
+	s.renderRecipeForm(w, r, rec, f, http.StatusBadRequest)
 }
 
 // lookupRecipe loads the recipe named by the {id} path value, writing a 404 and

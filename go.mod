@@ -6,6 +6,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.2.1
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/yuin/goldmark v1.8.7
 	golang.org/x/crypto v0.52.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.46.1
@@ -33,5 +34,5 @@ replace golang.org/x/net => golang.org/x/net v0.51.0
 
 require (
 	github.com/torkve/icloud-notes v1.0.0
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.54.0
 )

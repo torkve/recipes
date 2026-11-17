@@ -122,6 +122,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.addColumn(ctx, "icloud_accounts", "replica_uuid", "BLOB"); err != nil {
 		return fmt.Errorf("store: add icloud_accounts.replica_uuid: %w", err)
 	}
+	// Content revision counter for optimistic concurrency (see UpdateRecipe).
+	if err := s.addColumn(ctx, "recipes", "revision", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("store: add recipes.revision: %w", err)
+	}
+	// Recipe revision an embedding was computed from; -1 marks vectors stored
+	// before revisions existed, so they are re-embedded once.
+	if err := s.addColumn(ctx, "recipe_embeddings", "revision", "INTEGER NOT NULL DEFAULT -1"); err != nil {
+		return fmt.Errorf("store: add recipe_embeddings.revision: %w", err)
+	}
 	if err := s.seedCategories(ctx); err != nil {
 		return fmt.Errorf("store: seed categories: %w", err)
 	}

@@ -67,7 +67,7 @@ func seed(t *testing.T, st *store.Store, title string, catID int64, model string
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertEmbedding(ctx, r.ID, model, len(vec), vec); err != nil {
+	if err := st.UpsertEmbedding(ctx, r.ID, r.Revision, model, len(vec), vec); err != nil {
 		t.Fatal(err)
 	}
 	return r.ID

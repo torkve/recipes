@@ -39,26 +39,30 @@ func decodeVec(b []byte) []float32 {
 	return v
 }
 
-// UpsertEmbedding stores (or replaces) a recipe's embedding for a model.
-func (s *Store) UpsertEmbedding(ctx context.Context, recipeID int64, model string, dim int, vec []float32) error {
+// UpsertEmbedding stores (or replaces) a recipe's embedding for a model,
+// computed from the recipe content at the given revision. It is a no-op when
+// the recipe is gone or its current revision differs from revision.
+func (s *Store) UpsertEmbedding(ctx context.Context, recipeID, revision int64, model string, dim int, vec []float32) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO recipe_embeddings(recipe_id, model, dim, vec, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO recipe_embeddings(recipe_id, model, dim, vec, updated_at, revision)
+		SELECT ?, ?, ?, ?, ?, ?
+		WHERE (SELECT revision FROM recipes WHERE id = ?) = ?
 		ON CONFLICT(recipe_id) DO UPDATE SET
-		  model = excluded.model, dim = excluded.dim,
-		  vec = excluded.vec, updated_at = excluded.updated_at`,
-		recipeID, model, dim, encodeVec(vec), now)
+		  model = excluded.model, dim = excluded.dim, vec = excluded.vec,
+		  updated_at = excluded.updated_at, revision = excluded.revision`,
+		recipeID, model, dim, encodeVec(vec), now, revision, recipeID, revision)
 	return err
 }
 
-// RecipeIDsMissingEmbedding returns recipe ids with no embedding for the given
-// model — absent, or stored under a different (stale) model — oldest first.
+// RecipeIDsMissingEmbedding returns recipe ids with no current embedding for the
+// given model — absent, stored under a different model, or computed from an
+// older recipe revision — oldest first.
 func (s *Store) RecipeIDsMissingEmbedding(ctx context.Context, model string) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id FROM recipes r
 		LEFT JOIN recipe_embeddings e ON e.recipe_id = r.id AND e.model = ?
-		WHERE e.recipe_id IS NULL
+		WHERE e.recipe_id IS NULL OR e.revision != r.revision
 		ORDER BY r.id`, model)
 	if err != nil {
 		return nil, err
@@ -105,15 +109,15 @@ func EmbedText(title string, ingredients []models.IngredientBlock, stepsHTML str
 	return strings.TrimSpace(title + "\n" + ingredientsToText(ingredients) + "\n" + htmlToText(stepsHTML))
 }
 
-// RecipeEmbedInput returns the embedding input text for a recipe id; ok is false
-// when the recipe no longer exists.
-func (s *Store) RecipeEmbedInput(ctx context.Context, id int64) (string, bool, error) {
+// RecipeEmbedInput returns the embedding input text for a recipe id and the
+// recipe revision it reflects; ok is false when no recipe has that id.
+func (s *Store) RecipeEmbedInput(ctx context.Context, id int64) (text string, revision int64, ok bool, err error) {
 	r, err := s.GetRecipe(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
-	return EmbedText(r.Title, r.Ingredients, r.StepsHTML), true, nil
+	return EmbedText(r.Title, r.Ingredients, r.StepsHTML), r.Revision, true, nil
 }

@@ -88,9 +88,9 @@ func (w *Worker) backfill(ctx context.Context) {
 			end = len(ids)
 		}
 		var texts []string
-		var have []int64
+		var have, revs []int64
 		for _, id := range ids[i:end] {
-			txt, ok, err := w.store.RecipeEmbedInput(ctx, id)
+			txt, rev, ok, err := w.store.RecipeEmbedInput(ctx, id)
 			if err != nil {
 				log.Printf("search: embed input for recipe %d: %v", id, err)
 				continue
@@ -98,6 +98,7 @@ func (w *Worker) backfill(ctx context.Context) {
 			if ok {
 				texts = append(texts, txt)
 				have = append(have, id)
+				revs = append(revs, rev)
 			}
 		}
 		if len(texts) == 0 {
@@ -109,7 +110,7 @@ func (w *Worker) backfill(ctx context.Context) {
 			return // embedder unavailable; retry next tick
 		}
 		for j, v := range vecs {
-			if err := w.store.UpsertEmbedding(ctx, have[j], model, len(v), v); err != nil {
+			if err := w.store.UpsertEmbedding(ctx, have[j], revs[j], model, len(v), v); err != nil {
 				log.Printf("search: upsert embedding %d: %v", have[j], err)
 			}
 		}

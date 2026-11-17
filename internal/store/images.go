@@ -70,6 +70,36 @@ func imageFilenamesTx(ctx context.Context, tx *sql.Tx, recipeID int64) ([]string
 	return out, rows.Err()
 }
 
+// ImagesAttachedElsewhere returns those of the given filenames that are attached
+// to any recipe other than recipeID (pass 0 for a recipe not yet created), in
+// unspecified order.
+func (s *Store) ImagesAttachedElsewhere(ctx context.Context, recipeID int64, filenames []string) ([]string, error) {
+	if len(filenames) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(filenames)+1)
+	for _, f := range filenames {
+		args = append(args, f)
+	}
+	args = append(args, recipeID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT filename FROM recipe_images
+		 WHERE filename IN (`+placeholders(len(filenames))+`) AND recipe_id != ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // AllImageFilenames returns every referenced image filename (for orphan sweeps).
 func (s *Store) AllImageFilenames(ctx context.Context) (map[string]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT filename FROM recipe_images`)

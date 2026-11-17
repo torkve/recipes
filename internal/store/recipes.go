@@ -21,6 +21,10 @@ type RecipeInput struct {
 	ICloudNoteID *string
 	ICloudEtag   *string
 	OwnerID      *int64
+
+	// ExpectedRevision, when set, makes UpdateRecipe conditional: it fails with
+	// ErrConflict unless the stored recipe is still at this revision.
+	ExpectedRevision *int64
 }
 
 func marshalIngredients(blocks []models.IngredientBlock) (string, error) {
@@ -78,6 +82,12 @@ func (s *Store) CreateRecipe(ctx context.Context, in RecipeInput) (*models.Recip
 }
 
 // UpdateRecipe updates a recipe and its full-text entry atomically.
+//
+// When the content (title, category, ingredients, steps) changes, the recipe's
+// revision is incremented and its stale semantic-search vector is dropped so the
+// backfill worker re-embeds it. Linkage-only writes (e.g. the iCloud push storing
+// a new etag) leave both untouched. With in.ExpectedRevision set, the update
+// fails with ErrConflict if the stored revision differs.
 func (s *Store) UpdateRecipe(ctx context.Context, id int64, in RecipeInput) error {
 	ingJSON, err := marshalIngredients(in.Ingredients)
 	if err != nil {
@@ -91,18 +101,42 @@ func (s *Store) UpdateRecipe(ctx context.Context, id int64, in RecipeInput) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	res, err := tx.ExecContext(ctx, `
-		UPDATE recipes
-		SET title = ?, category_id = ?, ingredients_json = ?, steps_html = ?, updated_at = ?,
-		    icloud_note_id = ?, icloud_etag = ?, owner_id = ?
-		WHERE id = ?`,
-		in.Title, in.CategoryID, ingJSON, in.StepsHTML, now,
-		in.ICloudNoteID, in.ICloudEtag, in.OwnerID, id)
+	var (
+		curTitle, curIng, curSteps string
+		curCat, curRev             int64
+	)
+	err = tx.QueryRowContext(ctx,
+		`SELECT title, category_id, ingredients_json, steps_html, revision FROM recipes WHERE id = ?`, id).
+		Scan(&curTitle, &curCat, &curIng, &curSteps, &curRev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	if in.ExpectedRevision != nil && *in.ExpectedRevision != curRev {
+		return ErrConflict
+	}
+	contentChanged := curTitle != in.Title || curCat != in.CategoryID ||
+		curIng != ingJSON || curSteps != in.StepsHTML
+	newRev := curRev
+	if contentChanged {
+		newRev++
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE recipes
+		SET title = ?, category_id = ?, ingredients_json = ?, steps_html = ?, updated_at = ?,
+		    icloud_note_id = ?, icloud_etag = ?, owner_id = ?, revision = ?
+		WHERE id = ?`,
+		in.Title, in.CategoryID, ingJSON, in.StepsHTML, now,
+		in.ICloudNoteID, in.ICloudEtag, in.OwnerID, newRev, id); err != nil {
+		return err
+	}
+	if contentChanged {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM recipe_embeddings WHERE recipe_id = ?`, id); err != nil {
+			return err
+		}
 	}
 	if err := ftsUpsert(ctx, tx, id, in.Title, in.Ingredients, in.StepsHTML); err != nil {
 		return err
@@ -146,7 +180,7 @@ func scanRecipeRow(row interface{ Scan(...any) error }) (*models.Recipe, error) 
 	var noteID, etag sql.NullString
 	var owner sql.NullInt64
 	if err := row.Scan(&r.ID, &r.Title, &r.CategoryID, &ingJSON, &r.StepsHTML,
-		&created, &updated, &noteID, &etag, &owner); err != nil {
+		&created, &updated, &noteID, &etag, &owner, &r.Revision); err != nil {
 		return nil, err
 	}
 	if ingJSON != "" {
@@ -168,7 +202,7 @@ func scanRecipeRow(row interface{ Scan(...any) error }) (*models.Recipe, error) 
 	return &r, nil
 }
 
-const recipeCols = `id, title, category_id, ingredients_json, steps_html, created_at, updated_at, icloud_note_id, icloud_etag, owner_id`
+const recipeCols = `id, title, category_id, ingredients_json, steps_html, created_at, updated_at, icloud_note_id, icloud_etag, owner_id, revision`
 
 // GetRecipe loads a recipe with its category and images.
 func (s *Store) GetRecipe(ctx context.Context, id int64) (*models.Recipe, error) {

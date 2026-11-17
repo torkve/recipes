@@ -13,6 +13,7 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
+	"recipes/internal/cookbook"
 	"recipes/internal/notesync"
 	"recipes/internal/search"
 	"recipes/internal/store"
@@ -29,6 +30,7 @@ type Server struct {
 	templates map[string]*template.Template
 	engine    *notesync.Engine // nil when iCloud sync is disabled
 	search    *search.Service
+	cookbook  *cookbook.Service
 	handler   http.Handler
 }
 
@@ -47,6 +49,7 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *not
 		templates: tmpls,
 		engine:    engine,
 		search:    searchSvc,
+		cookbook:  cookbook.New(st, cfg.UploadsDir()),
 	}
 
 	// CSRF protection via the stdlib: deny unsafe (non-GET/HEAD/OPTIONS)

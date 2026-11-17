@@ -109,6 +109,8 @@ button.menu-item { border: none; color: var(--muted); }
   border-radius: 6px;
   font-size: 1rem;
 }
+.form label.checkbox { flex-direction: row; align-items: center; gap: 0.5rem; color: inherit; font-size: 1rem; }
+.form label.checkbox input { padding: 0; width: auto; }
 .error { color: #b00020; }
 .auth { max-width: 22rem; }
 

@@ -366,9 +366,17 @@ func normalizeScope(raw string) string {
 	return strings.Join(out, " ")
 }
 
+// WantsWrite reports whether the client asked for write access.
+func (a *AuthorizeRequest) WantsWrite() bool { return slices.Contains(a.Scopes(), ScopeWrite) }
+
 // Approve issues an authorization code for userID and returns the URL to
-// redirect the user agent to.
-func (s *Server) Approve(ctx context.Context, req *AuthorizeRequest, userID int64) (string, error) {
+// redirect the user agent to. The user decides on write access: the code
+// grants read, plus write when allowWrite is set, whatever the client asked for.
+func (s *Server) Approve(ctx context.Context, req *AuthorizeRequest, userID int64, allowWrite bool) (string, error) {
+	scope := ScopeRead
+	if allowWrite {
+		scope += " " + ScopeWrite
+	}
 	code := randomToken()
 	err := s.store.SaveOAuthCode(ctx, models.OAuthCode{
 		CodeHash:      hashToken(code),
@@ -376,7 +384,7 @@ func (s *Server) Approve(ctx context.Context, req *AuthorizeRequest, userID int6
 		UserID:        userID,
 		RedirectURI:   req.RedirectURI,
 		CodeChallenge: req.CodeChallenge,
-		Scope:         req.Scope,
+		Scope:         scope,
 		Resource:      req.Resource,
 		ExpiresAt:     s.now().Add(codeTTL),
 	})
@@ -583,11 +591,15 @@ func (s *Server) Verify(ctx context.Context, token string, _ *http.Request) (*au
 	if g.Resource != s.resource {
 		return nil, fmt.Errorf("%w: token issued for another resource", auth.ErrInvalidToken)
 	}
+	scopes := strings.Fields(g.Scope)
+	if !slices.Contains(scopes, ScopeRead) {
+		return nil, fmt.Errorf("%w: token lacks %s", auth.ErrInvalidToken, ScopeRead)
+	}
 	if err := s.store.TouchOAuthGrant(ctx, g.ID, now); err != nil {
 		log.Printf("oauth: touch grant %d: %v", g.ID, err)
 	}
 	return &auth.TokenInfo{
-		Scopes:     strings.Fields(g.Scope),
+		Scopes:     scopes,
 		Expiration: exp,
 		UserID:     strconv.FormatInt(g.UserID, 10),
 		Extra:      map[string]any{grantKey: g.ID},

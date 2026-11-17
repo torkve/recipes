@@ -41,9 +41,11 @@ func buildHandler(site http.Handler, authz *oauth.Server, mcpSrv *mcp.Server) ht
 	}
 	mux := http.NewServeMux()
 	authz.Register(mux)
+	// No Scopes here: the middleware would advertise them in the 401's
+	// WWW-Authenticate header, and MCP clients request exactly that scope, so
+	// connectors would never ask for write access. Verify requires read itself.
 	requireToken := auth.RequireBearerToken(authz.Verify, &auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: authz.ResourceMetadataURL(),
-		Scopes:              []string{oauth.ScopeRead},
 	})
 	mux.Handle(oauth.MCPPath, requireToken(mcpserver.Handler(mcpSrv)))
 	machine := web.Logging(mux)

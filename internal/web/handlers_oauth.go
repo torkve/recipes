@@ -61,7 +61,9 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	data["Title"] = "Доступ к книге"
 	data["ClientName"] = name
 	data["RedirectHost"] = redirectHost
-	data["ScopeLabels"] = labelScopes(req.Scopes())
+	data["ReadLabel"] = scopeLabels[oauth.ScopeRead]
+	data["WriteLabel"] = scopeLabels[oauth.ScopeWrite]
+	data["WriteChecked"] = req.WantsWrite()
 	data["Params"] = req.Params()
 	s.render(w, r, "oauth_consent", http.StatusOK, data)
 }
@@ -86,7 +88,8 @@ func (s *Server) handleOAuthDecision(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.oauth.Deny(req), http.StatusSeeOther)
 		return
 	}
-	target, err := s.oauth.Approve(r.Context(), req, currentUser(r).ID)
+	allowWrite := r.PostForm.Get("allow_write") == "on"
+	target, err := s.oauth.Approve(r.Context(), req, currentUser(r).ID, allowWrite)
 	if err != nil {
 		s.serverError(w, err)
 		return

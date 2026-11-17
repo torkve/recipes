@@ -162,6 +162,12 @@ func (e *env) authorize(clientID, challenge, decision string) *url.URL {
 	if !strings.Contains(string(page), "Тестовый клиент") {
 		e.t.Error("consent page does not name the client")
 	}
+	// The client asks for write access, so the write checkbox starts ticked;
+	// submit it ticked, as a browser would.
+	if !strings.Contains(string(page), `name="allow_write" checked`) {
+		e.t.Error("write checkbox not pre-ticked for a client asking for write access")
+	}
+	q.Set("allow_write", "on")
 	q.Set("decision", decision)
 	resp = e.do(e.browser, http.MethodPost, "/oauth/authorize", q)
 	if resp.StatusCode != http.StatusSeeOther {
@@ -227,6 +233,11 @@ func TestOAuthAndMCPEndToEnd(t *testing.T) {
 	status, challengeHdr := e.mcpStatus("")
 	if status != http.StatusUnauthorized || !strings.Contains(challengeHdr, `resource_metadata="`+e.base+"/.well-known/oauth-protected-resource/mcp") {
 		t.Fatalf("unauthenticated /mcp: %d %q", status, challengeHdr)
+	}
+	// No scope hint: clients would request exactly that scope and never ask for
+	// write access, instead of using scopes_supported from the metadata.
+	if strings.Contains(challengeHdr, "scope=") {
+		t.Fatalf("401 challenge advertises a scope: %q", challengeHdr)
 	}
 	var prm struct {
 		Resource             string   `json:"resource"`
@@ -323,9 +334,28 @@ func TestOAuthAndMCPEndToEnd(t *testing.T) {
 	}
 	_ = cs.Close()
 
-	// A token granted only read access cannot write.
+	// The user decides on write access regardless of what the client asked:
+	// a read-only request with the box ticked yields a write token...
+	upQ := authorizeQuery(clientID, challenge)
+	upQ.Set("scope", oauth.ScopeRead)
+	resp = e.do(e.browser, http.MethodGet, "/oauth/authorize?"+upQ.Encode(), nil)
+	consent, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(consent), `name="allow_write" checked`) {
+		t.Fatal("write checkbox pre-ticked for a client asking only for read")
+	}
+	upQ.Set("decision", "allow")
+	upQ.Set("allow_write", "on")
+	resp = e.do(e.browser, http.MethodPost, "/oauth/authorize", upQ)
+	upCode, _ := url.Parse(resp.Header.Get("Location"))
+	upTok, status := e.token(url.Values{"grant_type": {"authorization_code"}, "code": {upCode.Query().Get("code")},
+		"redirect_uri": {callback}, "client_id": {clientID}, "code_verifier": {verifier}})
+	if status != http.StatusOK || upTok.Scope != oauth.ScopeRead+" "+oauth.ScopeWrite {
+		t.Fatalf("read request with write ticked: %d %+v", status, upTok)
+	}
+
+	// ...and a write request with the box unticked yields a read-only token,
+	// which cannot write.
 	readQ := authorizeQuery(clientID, challenge)
-	readQ.Set("scope", oauth.ScopeRead)
 	readQ.Set("decision", "allow")
 	resp = e.do(e.browser, http.MethodPost, "/oauth/authorize", readQ)
 	readCode, _ := url.Parse(resp.Header.Get("Location"))

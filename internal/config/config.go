@@ -61,6 +61,10 @@ type Config struct {
 	// resource identifier and OAuth issuer and the base of absolute links handed
 	// to MCP clients. Empty disables the MCP endpoint.
 	PublicURL string
+	// OAuthRedirects lists the redirect URI patterns MCP clients may register
+	// (see oauth.DefaultRedirectPatterns for the syntax); nil selects the
+	// defaults (Claude, ChatGPT, loopback).
+	OAuthRedirects []string
 
 	// EmbedMinScore is the minimum cosine similarity for a semantic hit to count;
 	// the main relevance knob. Raise toward 0.84–0.88 if results are too broad,
@@ -111,6 +115,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: RECIPES_PUBLIC_URL: %w", err)
 	}
 	c.PublicURL = pub
+	for _, p := range strings.Split(os.Getenv("RECIPES_OAUTH_REDIRECTS"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			c.OAuthRedirects = append(c.OAuthRedirects, p)
+		}
+	}
 	return c, nil
 }
 
@@ -126,7 +135,8 @@ func normalizePublicURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+	if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" ||
+		strings.HasSuffix(u.Host, ":") {
 		return "", fmt.Errorf("%q must be scheme://host with nothing else", raw)
 	}
 	if u.Path != "" && u.Path != "/" {
@@ -135,7 +145,7 @@ func normalizePublicURL(raw string) (string, error) {
 	switch u.Scheme {
 	case "https":
 	case "http":
-		if h := u.Hostname(); h != "localhost" && h != "127.0.0.1" && h != "::1" {
+		if h := strings.ToLower(u.Hostname()); h != "localhost" && h != "127.0.0.1" && h != "::1" {
 			return "", fmt.Errorf("%q must use https (http is allowed only for localhost)", raw)
 		}
 	default:

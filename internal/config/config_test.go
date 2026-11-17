@@ -10,6 +10,8 @@ func TestNormalizePublicURL(t *testing.T) {
 		"https://recipes.example.com:8443": "https://recipes.example.com:8443",
 		"http://localhost:8080":            "http://localhost:8080",
 		"http://127.0.0.1:8080/":           "http://127.0.0.1:8080",
+		"http://LOCALHOST:8080":            "http://localhost:8080",
+		"http://[::1]:8080":                "http://[::1]:8080",
 	}
 	for in, want := range ok {
 		got, err := normalizePublicURL(in)
@@ -25,6 +27,7 @@ func TestNormalizePublicURL(t *testing.T) {
 		"https://recipes.example.com/?x=1",
 		"https://recipes.example.com/#f",
 		"https://user@recipes.example.com",
+		"https://recipes.example.com:",
 	}
 	for _, in := range bad {
 		if got, err := normalizePublicURL(in); err == nil {

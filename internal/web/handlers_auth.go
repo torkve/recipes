@@ -9,15 +9,19 @@ import (
 	"recipes/internal/store"
 )
 
-// handleLoginForm shows the admin login form. Logged-in users are redirected home.
+// handleLoginForm shows the admin login form. Logged-in users are redirected to
+// the ?next= path, or home.
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
+	denyFraming(w)
+	next := safeNext(r.URL.Query().Get("next"))
 	if currentUser(r) != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, orHome(next), http.StatusSeeOther)
 		return
 	}
 	data := s.newPageData(r)
 	data["Title"] = "Вход"
 	data["Username"] = ""
+	data["Next"] = next
 	s.render(w, r, "login", http.StatusOK, data)
 }
 
@@ -29,12 +33,15 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(r.PostFormValue("username"))
 	password := r.PostFormValue("password")
+	next := safeNext(r.PostFormValue("next"))
 
 	renderErr := func() {
+		denyFraming(w)
 		data := s.newPageData(r)
 		data["Title"] = "Вход"
 		data["Error"] = "Неверный логин или пароль"
 		data["Username"] = username
+		data["Next"] = next
 		s.render(w, r, "login", http.StatusUnauthorized, data)
 	}
 
@@ -58,7 +65,15 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, orHome(next), http.StatusSeeOther)
+}
+
+// orHome returns path, or "/" when it is empty.
+func orHome(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 // handleLogout clears the session.

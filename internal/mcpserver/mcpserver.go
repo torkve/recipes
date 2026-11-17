@@ -79,10 +79,15 @@ func New(d Deps) *mcp.Server {
 }
 
 // Handler serves s over stateless Streamable HTTP with JSON responses.
+//
+// The SDK's localhost DNS-rebinding check is off: it rejects requests that
+// arrive on a loopback address with a public Host header, which is exactly how
+// a reverse proxy on the same host forwards them. The caller must put the
+// handler behind bearer authentication, which a rebinding page cannot satisfy.
 func Handler(s *mcp.Server) http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return s },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true},
 	)
 }
 

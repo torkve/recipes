@@ -15,6 +15,8 @@ services:
       RECIPES_SECURE_COOKIES: ${RECIPES_SECURE_COOKIES:-false}
       # Public https base URL; enables the MCP endpoint (/mcp). Empty = off.
       RECIPES_PUBLIC_URL: ${RECIPES_PUBLIC_URL:-}
+      # MCP OAuth redirect allowlist (comma-separated); empty = built-in defaults.
+      RECIPES_OAUTH_REDIRECTS: ${RECIPES_OAUTH_REDIRECTS:-}
       # iCloud Notes sync (off by default; requires Apple ID + 2FA at runtime).
       RECIPES_ICLOUD_ENABLED: ${RECIPES_ICLOUD_ENABLED:-false}
       RECIPES_ICLOUD_PULL_MINUTES: ${RECIPES_ICLOUD_PULL_MINUTES:-15}

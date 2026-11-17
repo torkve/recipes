@@ -15,6 +15,7 @@ import (
 	"recipes/internal/config"
 	"recipes/internal/cookbook"
 	"recipes/internal/notesync"
+	"recipes/internal/oauth"
 	"recipes/internal/search"
 	"recipes/internal/store"
 )
@@ -31,12 +32,14 @@ type Server struct {
 	engine    *notesync.Engine // nil when iCloud sync is disabled
 	search    *search.Service
 	cookbook  *cookbook.Service
+	oauth     *oauth.Server // nil when the MCP endpoint is disabled
 	handler   http.Handler
 }
 
 // NewServer wires templates, session store, CSRF protection and routes. engine
-// may be nil, in which case the iCloud sync routes report the feature is off.
-func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *notesync.Engine, searchSvc *search.Service) (*Server, error) {
+// may be nil, in which case the iCloud sync routes report the feature is off;
+// authz may be nil, in which case the OAuth consent and connections pages do.
+func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *notesync.Engine, searchSvc *search.Service, authz *oauth.Server) (*Server, error) {
 	tmpls, err := loadTemplates(templateFuncs())
 	if err != nil {
 		return nil, err
@@ -50,6 +53,7 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *not
 		engine:    engine,
 		search:    searchSvc,
 		cookbook:  cookbook.New(st, cfg.UploadsDir()),
+		oauth:     authz,
 	}
 
 	// CSRF protection via the stdlib: deny unsafe (non-GET/HEAD/OPTIONS)
@@ -59,7 +63,7 @@ func NewServer(cfg *config.Config, st *store.Store, keys *auth.Keys, engine *not
 	// session cookie's SameSite=Lax is the residual defense for header-less
 	// requests. Placed outside withUser so denied requests skip the session load.
 	cop := http.NewCrossOriginProtection()
-	s.handler = logging(cop.Handler(s.withUser(s.routes())))
+	s.handler = Logging(cop.Handler(s.withUser(s.routes())))
 	return s, nil
 }
 
@@ -114,6 +118,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /admin/sync/conflicts/{id}/resolve", s.requireAuth(s.handleSyncResolve))
 	mux.HandleFunc("POST /admin/sync/unbind", s.requireAuth(s.handleSyncUnbind))
 
+	// OAuth consent for MCP clients and the user's connected applications
+	// (handlers report 404 when the MCP endpoint is disabled).
+	mux.HandleFunc("GET /oauth/authorize", s.requireAuth(s.handleOAuthAuthorize))
+	mux.HandleFunc("POST /oauth/authorize", s.requireAuth(s.handleOAuthDecision))
+	mux.HandleFunc("GET /admin/connections", s.requireAuth(s.handleConnections))
+	mux.HandleFunc("POST /admin/connections/{id}/revoke", s.requireAuth(s.handleConnectionRevoke))
+
 	// Embedded static assets.
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -124,8 +135,9 @@ func (s *Server) routes() http.Handler {
 	return mux
 }
 
-// logging is a minimal request logger middleware.
-func logging(next http.Handler) http.Handler {
+// Logging is a minimal request logger middleware. It logs the path only, never
+// the query string.
+func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s", r.Method, r.URL.Path)

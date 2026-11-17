@@ -15,4 +15,7 @@ var (
 	// ErrConflict is returned when a conditional update finds the row at a
 	// different revision than the caller expected.
 	ErrConflict = errors.New("store: revision conflict")
+	// ErrTokenReuse is returned when an already-rotated refresh token is
+	// presented again; the grant it belonged to has been revoked.
+	ErrTokenReuse = errors.New("store: refresh token reused")
 )

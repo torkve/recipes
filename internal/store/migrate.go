@@ -91,6 +91,49 @@ CREATE TABLE IF NOT EXISTS sync_state (
   remote_hash    TEXT NOT NULL DEFAULT ''
 );
 
+-- OAuth 2.1 authorization server state for MCP clients. Tokens and codes are
+-- stored as SHA-256 hashes only. A grant is one user's approval of one client;
+-- its tokens die with it.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL DEFAULT '',
+  redirect_uris TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash      TEXT PRIMARY KEY,
+  client_id      TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  redirect_uri   TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  scope          TEXT NOT NULL,
+  resource       TEXT NOT NULL,
+  expires_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_grants (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_id    TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope        TEXT NOT NULL,
+  resource     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_grants(user_id);
+
+-- kind is 'access' or 'refresh'. used marks a rotated refresh token; presenting
+-- it again revokes the grant (refresh token reuse detection).
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash TEXT PRIMARY KEY,
+  grant_id   INTEGER NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_grant ON oauth_tokens(grant_id);
+
 CREATE TABLE IF NOT EXISTS sync_conflicts (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   recipe_id  INTEGER REFERENCES recipes(id) ON DELETE CASCADE,

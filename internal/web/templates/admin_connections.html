@@ -1,0 +1,33 @@
+{{define "content"}}
+<section>
+  <div class="list-head">
+    <h1>Подключённые приложения</h1>
+    <a href="/admin/recipes">← Рецепты</a>
+  </div>
+
+  <p class="hint">Чтобы подключить книгу к Claude или ChatGPT, добавьте пользовательский коннектор с адресом <code>{{.MCPURL}}</code> и войдите своей учётной записью.</p>
+
+  {{if .Grants}}
+  <table class="admin-table">
+    <thead><tr><th>Приложение</th><th>Доступ</th><th>Подключено</th><th>Последнее использование</th><th></th></tr></thead>
+    <tbody>
+      {{range .Grants}}
+      <tr>
+        <td>{{.ClientName}}</td>
+        <td>{{range $i, $s := .Scopes}}{{if $i}}; {{end}}{{$s}}{{end}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td>{{.LastUsedAt}}</td>
+        <td class="row-actions">
+          <form class="inline" method="post" action="/admin/connections/{{.ID}}/revoke" onsubmit="return confirm('Отозвать доступ приложения «{{.ClientName}}»?');">
+            <button type="submit" class="btn-link btn-danger-link">Отозвать</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p>Нет подключённых приложений.</p>
+  {{end}}
+</section>
+{{end}}

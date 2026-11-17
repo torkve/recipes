@@ -93,6 +93,52 @@ type SyncState struct {
 	RemoteHash   string // note hash at last sync (base)
 }
 
+// OAuthClient is an MCP client application registered via OAuth dynamic client
+// registration. Clients are public: they hold no secret.
+type OAuthClient struct {
+	ID           string
+	Name         string
+	RedirectURIs []string
+	CreatedAt    time.Time
+}
+
+// OAuthCode is a pending single-use authorization code (stored by hash).
+type OAuthCode struct {
+	CodeHash      string
+	ClientID      string
+	UserID        int64
+	RedirectURI   string
+	CodeChallenge string // PKCE S256 challenge
+	Scope         string // space-separated
+	Resource      string
+	ExpiresAt     time.Time
+}
+
+// OAuthGrant is one user's approval of one client; its tokens belong to it.
+type OAuthGrant struct {
+	ID         int64
+	ClientID   string
+	ClientName string // joined from the client
+	UserID     int64
+	Scope      string // space-separated
+	Resource   string
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+}
+
+// OAuthToken is an issued token (stored by hash). Kind is "access" or "refresh".
+type OAuthToken struct {
+	Hash      string
+	Kind      string
+	ExpiresAt time.Time
+}
+
+// OAuth token kinds.
+const (
+	OAuthAccess  = "access"
+	OAuthRefresh = "refresh"
+)
+
 // Sync conflict kinds.
 const (
 	ConflictBothChanged    = "both_changed"

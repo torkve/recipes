@@ -17,7 +17,9 @@ import (
 	"recipes/internal/config"
 	"recipes/internal/embed"
 	"recipes/internal/icloudadapter"
+	"recipes/internal/mcpserver"
 	"recipes/internal/notesync"
+	"recipes/internal/oauth"
 	"recipes/internal/search"
 	"recipes/internal/store"
 	"recipes/internal/web"
@@ -91,14 +93,25 @@ func run() error {
 	}
 	searchSvc := search.New(st, embedder, cfg.EmbedMinScore)
 
-	srvHandler, err := web.NewServer(cfg, st, keys, engine, searchSvc)
+	// The MCP endpoint and its OAuth server run only with a public URL, which
+	// they need as resource identifier and issuer.
+	var authz *oauth.Server
+	if cfg.PublicURL != "" {
+		if authz, err = oauth.New(st, cfg.PublicURL, cfg.OAuthRedirects); err != nil {
+			return err
+		}
+		log.Printf("recipes: MCP endpoint enabled at %s", authz.Resource())
+	}
+
+	srvHandler, err := web.NewServer(cfg, st, keys, engine, searchSvc, authz)
 	if err != nil {
 		return err
 	}
+	mcpSrv := mcpserver.New(mcpserver.Deps{Store: st, Search: searchSvc, BaseURL: cfg.PublicURL})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           srvHandler.Handler(),
+		Handler:           buildHandler(srvHandler.Handler(), authz, mcpSrv),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

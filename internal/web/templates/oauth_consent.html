@@ -1,0 +1,20 @@
+{{define "content"}}
+<section class="auth">
+  <h1>Доступ к книге</h1>
+  {{if .Error}}
+  <p class="error">{{.Error}}</p>
+  {{else}}
+  <p>Приложение <strong>{{.ClientName}}</strong> запрашивает доступ к кулинарной книге от имени <strong>{{.User.Username}}</strong>:</p>
+  <ul>
+    {{range .ScopeLabels}}<li>{{.}}</li>{{end}}
+  </ul>
+  <p class="hint">После решения вы вернётесь на {{.RedirectHost}}. Отозвать доступ можно в разделе «Подключённые приложения».</p>
+  <form class="form" method="post" action="/oauth/authorize">
+    {{range $k, $v := .Params}}<input type="hidden" name="{{$k}}" value="{{index $v 0}}">
+    {{end}}
+    <button type="submit" name="decision" value="allow" class="btn">Разрешить</button>
+    <button type="submit" name="decision" value="deny" class="btn-link">Отказать</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

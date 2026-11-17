@@ -48,6 +48,7 @@ func (s *Server) newPageData(r *http.Request) pageData {
 		"User":          currentUser(r),
 		"Path":          r.URL.Path,
 		"ICloudEnabled": s.engine != nil,
+		"MCPEnabled":    s.oauth != nil,
 	}
 }
 

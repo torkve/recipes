@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/url"
 
 	"recipes/internal/models"
 )
@@ -34,7 +35,11 @@ func currentUser(r *http.Request) *models.User {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if currentUser(r) == nil {
-			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			target := "/admin/login"
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				target += "?next=" + url.QueryEscape(r.URL.RequestURI())
+			}
+			http.Redirect(w, r, target, http.StatusSeeOther)
 			return
 		}
 		next(w, r)

@@ -21,8 +21,9 @@ func TestSyncPushPreviewRouteGuards(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/login" {
-			t.Fatalf("got %d -> %q, want 303 -> /admin/login", resp.StatusCode, resp.Header.Get("Location"))
+		want := "/admin/login?next=%2Fadmin%2Fsync%2Fpush%2Fpreview"
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != want {
+			t.Fatalf("got %d -> %q, want 303 -> %s", resp.StatusCode, resp.Header.Get("Location"), want)
 		}
 	})
 

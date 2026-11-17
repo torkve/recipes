@@ -1,5 +1,6 @@
 // Package mcpserver exposes the cookbook to MCP clients (Claude, ChatGPT) over
-// Streamable HTTP: tools to browse categories, list, search and read recipes.
+// Streamable HTTP: tools to browse categories, list, search, read, create and
+// update recipes.
 //
 // The package does no authentication; the caller mounts Handler behind a bearer
 // token check.
@@ -17,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"recipes/internal/cattree"
+	"recipes/internal/cookbook"
 	"recipes/internal/models"
 	"recipes/internal/search"
 	"recipes/internal/stepsmd"
@@ -31,15 +33,23 @@ const (
 )
 
 const instructions = `Family cookbook. Recipes are mostly written in Russian.
-Use search_recipes to find recipes by dish, ingredient or description (it matches meaning, not only words), list_categories and list_recipes to browse, and get_recipe for the full recipe. Recipe steps are Markdown.`
+Use search_recipes to find recipes by dish, ingredient or description (it matches meaning, not only words), list_categories and list_recipes to browse, and get_recipe for the full recipe. Recipe steps are Markdown.
+Before creating a recipe, search for an existing one with the same dish to avoid duplicates. To edit, call get_recipe first and pass its revision to update_recipe.`
 
-// Deps are the services the tools read from.
+// Deps are the services the tools use.
 type Deps struct {
-	Store  *store.Store
-	Search *search.Service
+	Store    *store.Store
+	Search   *search.Service
+	Cookbook *cookbook.Service
 	// BaseURL is the public site URL (scheme://host) used for recipe and image
 	// links.
 	BaseURL string
+	// CanWrite reports whether the request in ctx may create and edit recipes.
+	// Nil denies every write.
+	CanWrite func(ctx context.Context) bool
+	// UserID returns the user the request in ctx acts for, recorded as the owner
+	// of created recipes. Nil records no owner.
+	UserID func(ctx context.Context) (int64, bool)
 }
 
 // New builds the MCP server with the cookbook tools registered.
@@ -75,6 +85,22 @@ func New(d Deps) *mcp.Server {
 		Description: "Get a full recipe: ingredients grouped in blocks, steps as Markdown, image URLs, and its current revision.",
 		Annotations: readOnly("Get recipe"),
 	}, t.getRecipe)
+
+	notDestructive, closed := false, false
+	mcp.AddTool(s, &mcp.Tool{
+		Name:  "create_recipe",
+		Title: "Create recipe",
+		Description: "Add a new recipe to the cookbook. Write the recipe in the language the user uses (the cookbook is mostly Russian). " +
+			"Ingredients are grouped in blocks (use one block without subtitle for a simple list); steps are Markdown.",
+		Annotations: &mcp.ToolAnnotations{Title: "Create recipe", DestructiveHint: &notDestructive, OpenWorldHint: &closed},
+	}, t.createRecipe)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:  "update_recipe",
+		Title: "Update recipe",
+		Description: "Change an existing recipe. Only the fields you pass are changed; ingredients and steps_markdown replace the whole list/text. " +
+			"Pass the revision from get_recipe as expected_revision; if the recipe changed since, the update is rejected and you should re-read it.",
+		Annotations: &mcp.ToolAnnotations{Title: "Update recipe", IdempotentHint: true, OpenWorldHint: &closed},
+	}, t.updateRecipe)
 	return s
 }
 

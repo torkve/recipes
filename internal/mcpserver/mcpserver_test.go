@@ -6,10 +6,12 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"recipes/internal/cookbook"
 	"recipes/internal/models"
 	"recipes/internal/search"
 	"recipes/internal/store"
@@ -19,8 +21,11 @@ const base = "https://recipes.example.com"
 
 type fixture struct {
 	cs                  *mcp.ClientSession
+	st                  *store.Store
 	soups, cold, baking *models.Category
 	borscht, gazpacho   *models.Recipe
+	owner               int64
+	canWrite            atomic.Bool
 }
 
 func setup(t *testing.T) *fixture {
@@ -34,7 +39,12 @@ func setup(t *testing.T) *fixture {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{}
+	f := &fixture{st: st}
+	u, err := st.CreateUser(ctx, "cook", "hash", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.owner = u.ID
 	f.soups, _ = st.GetOrCreateCategory(ctx, "Супы", models.SourceManual)
 	f.cold, _ = st.GetOrCreateCategory(ctx, "Холодные", models.SourceManual)
 	if err := st.SetCategoryParent(ctx, f.cold.ID, &f.soups.ID); err != nil {
@@ -59,7 +69,11 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 
-	srv := New(Deps{Store: st, Search: search.New(st, nil, 0), BaseURL: base})
+	srv := New(Deps{
+		Store: st, Search: search.New(st, nil, 0), Cookbook: cookbook.New(st, t.TempDir()), BaseURL: base,
+		CanWrite: func(context.Context) bool { return f.canWrite.Load() },
+		UserID:   func(context.Context) (int64, bool) { return f.owner, true },
+	})
 	ts := httptest.NewServer(Handler(srv))
 	t.Cleanup(ts.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
@@ -107,26 +121,116 @@ func titles(rs []recipeSummary) []string {
 	return out
 }
 
-func TestToolsAreReadOnly(t *testing.T) {
+func TestToolAnnotations(t *testing.T) {
 	f := setup(t)
 	res, err := f.cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"list_categories": true, "list_recipes": true, "search_recipes": true, "get_recipe": true}
+	// readOnly / destructive per tool.
+	want := map[string][2]bool{
+		"list_categories": {true, false},
+		"list_recipes":    {true, false},
+		"search_recipes":  {true, false},
+		"get_recipe":      {true, false},
+		"create_recipe":   {false, false},
+		"update_recipe":   {false, true},
+	}
 	if len(res.Tools) != len(want) {
 		t.Fatalf("got %d tools, want %d", len(res.Tools), len(want))
 	}
 	for _, tool := range res.Tools {
-		if !want[tool.Name] {
+		w, ok := want[tool.Name]
+		if !ok {
 			t.Errorf("unexpected tool %q", tool.Name)
+			continue
 		}
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("%s: not annotated read-only", tool.Name)
+		a := tool.Annotations
+		if a == nil || a.ReadOnlyHint != w[0] {
+			t.Errorf("%s: readOnlyHint = %v, want %v", tool.Name, a != nil && a.ReadOnlyHint, w[0])
+			continue
+		}
+		// An absent destructiveHint means true (MCP spec default).
+		if destructive := a.DestructiveHint == nil || *a.DestructiveHint; !w[0] && destructive != w[1] {
+			t.Errorf("%s: destructive = %v, want %v", tool.Name, destructive, w[1])
 		}
 		if tool.OutputSchema == nil {
 			t.Errorf("%s: no output schema", tool.Name)
 		}
+	}
+}
+
+func TestCreateAndUpdateRecipe(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	args := map[string]any{
+		"title":    "Окрошка",
+		"category": "супы / холодные",
+		"ingredients": []map[string]any{
+			{"items": []string{"квас", " ", "огурцы"}},
+			{"subtitle": "Заправка", "items": []string{"горчица"}},
+		},
+		"steps_markdown": "# Подготовка\n\nНарезать **всё**.\n\n<script>alert(1)</script>\n\n- охладить",
+	}
+
+	var out recipe
+	if msg := f.call(t, "create_recipe", args, &out); !strings.Contains(msg, "read-only") {
+		t.Fatalf("create without write access: error %q, want read-only", msg)
+	}
+	f.canWrite.Store(true)
+	if msg := f.call(t, "create_recipe", args, &out); msg != "" {
+		t.Fatal(msg)
+	}
+	if out.CategoryID != f.cold.ID || out.Category != "Супы / Холодные" {
+		t.Errorf("category = %d %q, want cold soups", out.CategoryID, out.Category)
+	}
+	if len(out.Ingredients) != 2 || len(out.Ingredients[0].Items) != 2 {
+		t.Errorf("ingredients = %+v, want blank item dropped", out.Ingredients)
+	}
+	if !strings.Contains(out.StepsMarkdown, "### Подготовка") || !strings.Contains(out.StepsMarkdown, "**всё**") ||
+		strings.Contains(out.StepsMarkdown, "alert") {
+		t.Errorf("steps_markdown = %q", out.StepsMarkdown)
+	}
+	rec, err := f.st.GetRecipe(ctx, out.ID)
+	if err != nil || rec.OwnerID == nil || *rec.OwnerID != f.owner {
+		t.Fatalf("owner not recorded: %+v %v", rec, err)
+	}
+
+	// A new name creates a top-level category; an unknown path is an error.
+	var other recipe
+	if msg := f.call(t, "create_recipe", map[string]any{"title": "Чай", "category": "Напитки"}, &other); msg != "" {
+		t.Fatal(msg)
+	}
+	if other.Category != "Напитки" {
+		t.Errorf("new category = %q", other.Category)
+	}
+	if msg := f.call(t, "create_recipe", map[string]any{"title": "x", "category": "Нет / Такой"}, &other); !strings.Contains(msg, "no category has path") {
+		t.Errorf("unknown path: error %q", msg)
+	}
+	if msg := f.call(t, "create_recipe", map[string]any{"title": "x"}, &other); !strings.Contains(msg, "category is required") {
+		t.Errorf("no category: error %q", msg)
+	}
+
+	// Partial update keeps the other fields and bumps the revision.
+	var upd recipe
+	if msg := f.call(t, "update_recipe", map[string]any{"id": out.ID, "expected_revision": out.Revision, "title": "Окрошка на квасе"}, &upd); msg != "" {
+		t.Fatal(msg)
+	}
+	if upd.Title != "Окрошка на квасе" || upd.StepsMarkdown != out.StepsMarkdown || upd.Revision != out.Revision+1 {
+		t.Errorf("after title update: %+v", upd)
+	}
+
+	// A stale revision is rejected.
+	if msg := f.call(t, "update_recipe", map[string]any{"id": out.ID, "expected_revision": out.Revision, "steps_markdown": "x"}, &upd); !strings.Contains(msg, "was changed") {
+		t.Errorf("stale revision: error %q", msg)
+	}
+	// So is a reference to another recipe's image.
+	img := "![](" + base + "/uploads/a.png)"
+	if msg := f.call(t, "update_recipe", map[string]any{"id": out.ID, "expected_revision": upd.Revision, "steps_markdown": img}, &upd); !strings.Contains(msg, "another recipe") {
+		t.Errorf("foreign image: error %q", msg)
+	}
+	if msg := f.call(t, "update_recipe", map[string]any{"id": 9999, "expected_revision": 0, "title": "x"}, &upd); !strings.Contains(msg, "not found") {
+		t.Errorf("missing recipe: error %q", msg)
 	}
 }
 

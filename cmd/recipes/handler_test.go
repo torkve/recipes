@@ -20,7 +20,6 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
-	"recipes/internal/mcpserver"
 	"recipes/internal/oauth"
 	"recipes/internal/search"
 	"recipes/internal/store"
@@ -73,8 +72,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mcpSrv := mcpserver.New(mcpserver.Deps{Store: st, Search: searchSvc, BaseURL: base})
-	ts.Config.Handler = buildHandler(site.Handler(), authz, mcpSrv)
+	ts.Config.Handler = buildHandler(site.Handler(), authz, newMCPServer(st, searchSvc, cfg))
 	ts.Start()
 	t.Cleanup(ts.Close)
 
@@ -319,7 +317,35 @@ func TestOAuthAndMCPEndToEnd(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("list_categories: %v %+v", err, res)
 	}
+	res, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: "create_recipe", Arguments: map[string]any{"title": "Чай", "category": "Напитки"}})
+	if err != nil || res.IsError {
+		t.Fatalf("create_recipe with a write token: %v %+v", err, res)
+	}
 	_ = cs.Close()
+
+	// A token granted only read access cannot write.
+	readQ := authorizeQuery(clientID, challenge)
+	readQ.Set("scope", oauth.ScopeRead)
+	readQ.Set("decision", "allow")
+	resp = e.do(e.browser, http.MethodPost, "/oauth/authorize", readQ)
+	readCode, _ := url.Parse(resp.Header.Get("Location"))
+	readExchange := url.Values{"grant_type": {"authorization_code"}, "code": {readCode.Query().Get("code")},
+		"redirect_uri": {callback}, "client_id": {clientID}, "code_verifier": {verifier}}
+	readTok, status := e.token(readExchange)
+	if status != http.StatusOK || readTok.Scope != oauth.ScopeRead {
+		t.Fatalf("read-only token: %d %+v", status, readTok)
+	}
+	rcs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: e.base + "/mcp", HTTPClient: &http.Client{Transport: bearer{readTok.AccessToken}}, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = rcs.CallTool(ctx, &mcp.CallToolParams{Name: "create_recipe", Arguments: map[string]any{"title": "Кофе", "category": "Напитки"}})
+	if err != nil || !res.IsError {
+		t.Fatalf("create_recipe with a read-only token succeeded: %v %+v", err, res)
+	}
+	_ = rcs.Close()
 
 	// The grant shows on the connections page.
 	page, _ := io.ReadAll(e.do(e.browser, http.MethodGet, "/admin/connections", nil).Body)

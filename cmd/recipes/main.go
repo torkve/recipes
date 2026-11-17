@@ -17,7 +17,6 @@ import (
 	"recipes/internal/config"
 	"recipes/internal/embed"
 	"recipes/internal/icloudadapter"
-	"recipes/internal/mcpserver"
 	"recipes/internal/notesync"
 	"recipes/internal/oauth"
 	"recipes/internal/search"
@@ -107,7 +106,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	mcpSrv := mcpserver.New(mcpserver.Deps{Store: st, Search: searchSvc, BaseURL: cfg.PublicURL})
+	mcpSrv := newMCPServer(st, searchSvc, cfg)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

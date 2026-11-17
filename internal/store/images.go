@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 
 	"recipes/internal/models"
@@ -70,34 +72,104 @@ func imageFilenamesTx(ctx context.Context, tx *sql.Tx, recipeID int64) ([]string
 	return out, rows.Err()
 }
 
-// ImagesAttachedElsewhere returns those of the given filenames that are attached
-// to any recipe other than recipeID (pass 0 for a recipe not yet created), in
-// unspecified order.
-func (s *Store) ImagesAttachedElsewhere(ctx context.Context, recipeID int64, filenames []string) ([]string, error) {
-	if len(filenames) == 0 {
-		return nil, nil
-	}
-	args := make([]any, 0, len(filenames)+1)
-	for _, f := range filenames {
-		args = append(args, f)
-	}
-	args = append(args, recipeID)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT filename FROM recipe_images
-		 WHERE filename IN (`+placeholders(len(filenames))+`) AND recipe_id != ?`, args...)
+func queryStrings(ctx context.Context, tx *sql.Tx, q string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var f string
-		if err := rows.Scan(&f); err != nil {
+		var v string
+		if err := rows.Scan(&v); err != nil {
 			return nil, err
 		}
-		out = append(out, f)
+		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// reconcileImagesTx makes recipe recipeID's image rows match images within tx.
+// It fails with ErrForeignImage when an image is attached to another recipe,
+// and returns the detached filenames that no recipe references any more.
+func reconcileImagesTx(ctx context.Context, tx *sql.Tx, recipeID int64, images []models.RecipeImage) ([]string, error) {
+	want := make(map[string]models.RecipeImage, len(images))
+	var names []any
+	for _, img := range images {
+		if _, dup := want[img.Filename]; !dup {
+			want[img.Filename] = img
+			names = append(names, img.Filename)
+		}
+	}
+	if len(names) > 0 {
+		foreign, err := queryStrings(ctx, tx,
+			`SELECT DISTINCT filename FROM recipe_images WHERE filename IN (`+placeholders(len(names))+`) AND recipe_id != ?`,
+			append(names, recipeID)...)
+		if err != nil {
+			return nil, err
+		}
+		if len(foreign) > 0 {
+			return nil, fmt.Errorf("%w: %s", ErrForeignImage, strings.Join(foreign, ", "))
+		}
+	}
+
+	existing, err := imageFilenamesTx(ctx, tx, recipeID)
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(existing))
+	var detached []string
+	for _, name := range existing {
+		have[name] = true
+		if _, keep := want[name]; keep {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM recipe_images WHERE recipe_id = ? AND filename = ?`, recipeID, name); err != nil {
+			return nil, err
+		}
+		detached = append(detached, name)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, img := range images {
+		if have[img.Filename] {
+			continue
+		}
+		have[img.Filename] = true
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO recipe_images (recipe_id, filename, content_type, created_at) VALUES (?, ?, ?, ?)`,
+			recipeID, img.Filename, img.ContentType, now); err != nil {
+			return nil, err
+		}
+	}
+	return unreferencedTx(ctx, tx, detached)
+}
+
+// unreferencedTx returns those of names that no recipe_images row references.
+func unreferencedTx(ctx context.Context, tx *sql.Tx, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
+	}
+	still, err := queryStrings(ctx, tx,
+		`SELECT DISTINCT filename FROM recipe_images WHERE filename IN (`+placeholders(len(names))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	referenced := make(map[string]bool, len(still))
+	for _, n := range still {
+		referenced[n] = true
+	}
+	var out []string
+	for _, n := range names {
+		if !referenced[n] {
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 // AllImageFilenames returns every referenced image filename (for orphan sweeps).

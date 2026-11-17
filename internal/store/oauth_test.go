@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,5 +167,70 @@ func TestOAuthListDeleteAndPurge(t *testing.T) {
 	}
 	if n, _ := s.CountOAuthClients(ctx); n != 0 {
 		t.Fatalf("clients left: %d", n)
+	}
+}
+
+func TestCreateOAuthClientCapped(t *testing.T) {
+	s, u, now := oauthFixture(t) // c1 created at now
+	ctx := context.Background()
+	client := func(id string, minutes int) models.OAuthClient {
+		return models.OAuthClient{ID: id, RedirectURIs: []string{"x"}, CreatedAt: now.Add(time.Duration(minutes) * time.Minute)}
+	}
+	if err := s.CreateOAuthClientCapped(ctx, client("c2", 1), 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateOAuthClientCapped(ctx, client("c3", 2), 3); err != nil {
+		t.Fatal(err)
+	}
+	// c1 is the oldest but in use; at the cap c2, the oldest unused, goes.
+	if _, err := s.CreateOAuthGrant(ctx, models.OAuthGrant{ClientID: "c1", UserID: u.ID, Scope: "s", Resource: "r", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateOAuthClientCapped(ctx, client("c4", 3), 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetOAuthClient(ctx, "c2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("c2 not evicted: %v", err)
+	}
+	for _, id := range []string{"c1", "c3", "c4"} {
+		if _, err := s.GetOAuthClient(ctx, id); err != nil {
+			t.Fatalf("%s missing: %v", id, err)
+		}
+	}
+	// With every client in use (grant or pending code), registration fails and
+	// leaves nothing behind.
+	for _, id := range []string{"c3", "c4"} {
+		if err := s.SaveOAuthCode(ctx, models.OAuthCode{CodeHash: "h" + id, ClientID: id, UserID: u.ID, ExpiresAt: now.Add(time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateOAuthClientCapped(ctx, client("c5", 4), 3); !errors.Is(err, ErrClientLimit) {
+		t.Fatalf("full cap: err = %v, want ErrClientLimit", err)
+	}
+	if _, err := s.GetOAuthClient(ctx, "c5"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("refused client was stored: %v", err)
+	}
+}
+
+// TestCreateOAuthClientCappedConcurrent pins that parallel registrations never
+// exceed the cap.
+func TestCreateOAuthClientCappedConcurrent(t *testing.T) {
+	s, _, now := oauthFixture(t)
+	ctx := context.Background()
+	const max = 10
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c := models.OAuthClient{ID: fmt.Sprintf("p%d", i), RedirectURIs: []string{"x"}, CreatedAt: now.Add(time.Duration(i) * time.Second)}
+			if err := s.CreateOAuthClientCapped(ctx, c, max); err != nil {
+				t.Errorf("register %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if n, _ := s.CountOAuthClients(ctx); n > max {
+		t.Fatalf("%d clients registered, cap is %d", n, max)
 	}
 }

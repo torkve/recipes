@@ -1,12 +1,15 @@
 package imagefetch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 )
@@ -116,9 +119,16 @@ func TestDownload(t *testing.T) {
 	if _, err := f.Get(ctx, "https://images.example/missing"); !errors.Is(err, ErrDownload) || !strings.Contains(err.Error(), "404") {
 		t.Errorf("404: err = %v", err)
 	}
-	// Network errors are reported without their details.
-	if _, err := New(1000).Get(ctx, "https://no-such-host.invalid/a.png"); err != ErrDownload {
+	// Network errors are reported without their details, and logged without
+	// the URL's path or query, which may carry credentials.
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+	if _, err := New(1000).Get(ctx, "https://no-such-host.invalid/secret-path/a.png?sig=SECRET"); err != ErrDownload {
 		t.Errorf("unresolvable host: err = %v, want bare ErrDownload", err)
+	}
+	if out := logs.String(); !strings.Contains(out, "no-such-host.invalid") || strings.Contains(out, "SECRET") || strings.Contains(out, "secret-path") {
+		t.Errorf("log = %q, want host only", out)
 	}
 	if _, err := f.Get(ctx, "https://images.example/redirect-http"); !errors.Is(err, ErrBlocked) {
 		t.Errorf("redirect to http: err = %v, want ErrBlocked", err)

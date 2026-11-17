@@ -238,15 +238,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	if n, err := s.store.CountOAuthClients(ctx); err != nil {
-		serverError(w, err)
-		return
-	} else if n >= maxClients {
+	// At the cap the oldest never-used client (no grant, no pending code) is
+	// evicted, so registration floods cannot lock out legitimate clients.
+	c := models.OAuthClient{ID: randomToken(), Name: name, RedirectURIs: req.RedirectURIs, CreatedAt: now}
+	err := s.store.CreateOAuthClientCapped(ctx, c, maxClients)
+	if errors.Is(err, store.ErrClientLimit) {
 		oauthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "too many registered clients")
 		return
 	}
-	c := models.OAuthClient{ID: randomToken(), Name: name, RedirectURIs: req.RedirectURIs, CreatedAt: now}
-	if err := s.store.CreateOAuthClient(ctx, c); err != nil {
+	if err != nil {
 		serverError(w, err)
 		return
 	}

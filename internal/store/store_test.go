@@ -399,3 +399,83 @@ func TestEmbeddingFromOlderRevisionStaysMissing(t *testing.T) {
 		t.Fatalf("missing after current-revision upsert = %v, want none", ids)
 	}
 }
+
+func countRecipes(t *testing.T, s *Store) int {
+	t.Helper()
+	var n int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM recipes`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestRecipeImagesAreTransactional pins that image rows change in the same
+// transaction as the recipe and that shared files are never reported for
+// deletion.
+func TestRecipeImagesAreTransactional(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	cat, _ := s.GetOrCreateCategory(ctx, "Супы", models.SourceManual)
+	img := func(names ...string) []models.RecipeImage {
+		out := []models.RecipeImage{}
+		for _, n := range names {
+			out = append(out, models.RecipeImage{Filename: n, ContentType: "image/png"})
+		}
+		return out
+	}
+
+	a, err := s.CreateRecipeWithImages(ctx, RecipeInput{Title: "A", CategoryID: cat.ID}, img("a.png", "a.png", "s.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Images) != 2 {
+		t.Fatalf("images = %+v, want a.png and s.png once each", a.Images)
+	}
+
+	// A create referencing another recipe's image fails and leaves nothing.
+	before := countRecipes(t, s)
+	if _, err := s.CreateRecipeWithImages(ctx, RecipeInput{Title: "B", CategoryID: cat.ID}, img("a.png")); !errors.Is(err, ErrForeignImage) {
+		t.Fatalf("foreign image on create: err = %v", err)
+	}
+	if countRecipes(t, s) != before {
+		t.Fatal("failed create left a recipe behind")
+	}
+
+	// A failed update changes neither content nor images.
+	b, _ := s.CreateRecipeWithImages(ctx, RecipeInput{Title: "B", CategoryID: cat.ID}, img("b.png"))
+	if _, err := s.UpdateRecipeWithImages(ctx, b.ID, RecipeInput{Title: "B2", CategoryID: cat.ID}, img("a.png")); !errors.Is(err, ErrForeignImage) {
+		t.Fatalf("foreign image on update: err = %v", err)
+	}
+	if got, _ := s.GetRecipe(ctx, b.ID); got.Title != "B" || len(got.Images) != 1 || got.Images[0].Filename != "b.png" {
+		t.Fatalf("failed update changed the recipe: %+v", got)
+	}
+
+	// Legacy data: s.png is also attached to b. Detaching it from a, or deleting
+	// a, must not report the shared file.
+	if _, err := s.AddImage(ctx, b.ID, "s.png", "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.UpdateRecipeWithImages(ctx, a.ID, RecipeInput{Title: "A", CategoryID: cat.ID, ExpectedRevision: nil}, img())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "a.png" {
+		t.Fatalf("removed = %v, want [a.png] (s.png is still used by b)", removed)
+	}
+	files, err := s.DeleteRecipe(ctx, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("delete b returned %v, want b.png and s.png (now unused)", files)
+	}
+
+	// nil images leaves image rows untouched.
+	c, _ := s.CreateRecipeWithImages(ctx, RecipeInput{Title: "C", CategoryID: cat.ID}, img("c.png"))
+	if err := s.UpdateRecipe(ctx, c.ID, RecipeInput{Title: "C2", CategoryID: cat.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRecipe(ctx, c.ID); len(got.Images) != 1 {
+		t.Fatalf("UpdateRecipe touched images: %+v", got.Images)
+	}
+}

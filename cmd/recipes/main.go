@@ -15,6 +15,7 @@ import (
 
 	"recipes/internal/auth"
 	"recipes/internal/config"
+	"recipes/internal/cookbook"
 	"recipes/internal/embed"
 	"recipes/internal/icloudadapter"
 	"recipes/internal/notesync"
@@ -126,6 +127,9 @@ func run() error {
 		go worker.Run(ctx)
 	}
 
+	// Delete uploaded images that never got attached to a recipe.
+	go sweepUploads(ctx, cookbook.New(st, cfg.UploadsDir()))
+
 	// Start the semantic-index backfill worker when embeddings are enabled.
 	if embClient != nil {
 		sw := search.NewWorker(searchSvc, st, embClient, time.Duration(cfg.EmbedBackfillMinutes)*time.Minute)
@@ -149,4 +153,24 @@ func run() error {
 	}
 	<-idleClosed
 	return nil
+}
+
+// sweepUploads deletes unattached uploads older than a week, at start and then
+// hourly, until ctx is cancelled. The week covers an editor left open with a
+// pasted but unsaved image.
+func sweepUploads(ctx context.Context, cb *cookbook.Service) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if n, err := cb.SweepOrphanUploads(ctx, 7*24*time.Hour); err != nil {
+			log.Printf("recipes: sweep uploads: %v", err)
+		} else if n > 0 {
+			log.Printf("recipes: swept %d unattached upload(s)", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

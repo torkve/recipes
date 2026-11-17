@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -70,8 +71,12 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 
+	uploads := t.TempDir()
+	if err := os.WriteFile(filepath.Join(uploads, "a.png"), []byte("\x89PNG\r\n\x1a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	srv := New(Deps{
-		Store: st, Search: search.New(st, nil, 0), Cookbook: cookbook.New(st, t.TempDir()), BaseURL: base,
+		Store: st, Search: search.New(st, nil, 0), Cookbook: cookbook.New(st, uploads), BaseURL: base,
 		CanWrite: func(context.Context) bool { return f.canWrite.Load() },
 		UserID:   func(context.Context) (int64, bool) { return f.owner, true },
 		FetchImage: func(_ context.Context, u string) ([]byte, error) {

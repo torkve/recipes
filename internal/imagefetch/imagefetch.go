@@ -99,7 +99,7 @@ func (f *Fetcher) Get(ctx context.Context, raw string) ([]byte, error) {
 		}
 		// Network error details (resolver addresses, which internal names
 		// exist) are logged, not returned to the client.
-		log.Printf("imagefetch: get %s: %v", u.Redacted(), err)
+		logFailure("get", u, err)
 		return nil, ErrDownload
 	}
 	defer resp.Body.Close()
@@ -111,13 +111,24 @@ func (f *Fetcher) Get(ctx context.Context, raw string) ([]byte, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(f.MaxBytes)+1))
 	if err != nil {
-		log.Printf("imagefetch: read %s: %v", u.Redacted(), err)
+		logFailure("read", u, err)
 		return nil, ErrDownload
 	}
 	if len(data) > f.MaxBytes {
 		return nil, ErrTooLarge
 	}
 	return data, nil
+}
+
+// logFailure logs a failed download by origin only: download URLs often carry
+// credentials (signed query strings, tokens in the path), so neither the URL
+// path and query nor *url.Error's text, which embeds the full URL, is logged.
+func logFailure(op string, u *url.URL, err error) {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	log.Printf("imagefetch: %s %s://%s: %v", op, u.Scheme, u.Host, err)
 }
 
 // decodeDataURI decodes a base64 data:image/... URI.

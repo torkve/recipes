@@ -49,8 +49,16 @@ func ftsUpsert(ctx context.Context, tx *sql.Tx, id int64, title string, ingredie
 	return err
 }
 
-// CreateRecipe inserts a recipe and its full-text index entry atomically.
+// CreateRecipe inserts a recipe and its full-text index entry atomically,
+// attaching no images.
 func (s *Store) CreateRecipe(ctx context.Context, in RecipeInput) (*models.Recipe, error) {
+	return s.CreateRecipeWithImages(ctx, in, nil)
+}
+
+// CreateRecipeWithImages inserts a recipe, its full-text entry and, when images
+// is non-nil, its image rows in one transaction. It fails with ErrForeignImage
+// when an image is attached to another recipe.
+func (s *Store) CreateRecipeWithImages(ctx context.Context, in RecipeInput, images []models.RecipeImage) (*models.Recipe, error) {
 	ingJSON, err := marshalIngredients(in.Ingredients)
 	if err != nil {
 		return nil, err
@@ -74,6 +82,11 @@ func (s *Store) CreateRecipe(ctx context.Context, in RecipeInput) (*models.Recip
 	if err := ftsUpsert(ctx, tx, id, in.Title, in.Ingredients, in.StepsHTML); err != nil {
 		return nil, err
 	}
+	if images != nil {
+		if _, err := reconcileImagesTx(ctx, tx, id, images); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -87,17 +100,27 @@ func (s *Store) CreateRecipe(ctx context.Context, in RecipeInput) (*models.Recip
 // revision is incremented and its stale semantic-search vector is dropped so the
 // backfill worker re-embeds it. Linkage-only writes (e.g. the iCloud push storing
 // a new etag) leave both untouched. With in.ExpectedRevision set, the update
-// fails with ErrConflict if the stored revision differs.
+// fails with ErrConflict if the stored revision differs. Images are untouched.
 func (s *Store) UpdateRecipe(ctx context.Context, id int64, in RecipeInput) error {
+	_, err := s.UpdateRecipeWithImages(ctx, id, in, nil)
+	return err
+}
+
+// UpdateRecipeWithImages is UpdateRecipe that, when images is non-nil, also
+// makes the recipe's image rows match images in the same transaction. It fails
+// with ErrForeignImage when an image is attached to another recipe, and returns
+// the detached filenames no recipe references any more, whose files the caller
+// may delete.
+func (s *Store) UpdateRecipeWithImages(ctx context.Context, id int64, in RecipeInput, images []models.RecipeImage) ([]string, error) {
 	ingJSON, err := marshalIngredients(in.Ingredients)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -109,13 +132,13 @@ func (s *Store) UpdateRecipe(ctx context.Context, id int64, in RecipeInput) erro
 		`SELECT title, category_id, ingredients_json, steps_html, revision FROM recipes WHERE id = ?`, id).
 		Scan(&curTitle, &curCat, &curIng, &curSteps, &curRev)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if in.ExpectedRevision != nil && *in.ExpectedRevision != curRev {
-		return ErrConflict
+		return nil, ErrConflict
 	}
 	contentChanged := curTitle != in.Title || curCat != in.CategoryID ||
 		curIng != ingJSON || curSteps != in.StepsHTML
@@ -131,21 +154,31 @@ func (s *Store) UpdateRecipe(ctx context.Context, id int64, in RecipeInput) erro
 		WHERE id = ?`,
 		in.Title, in.CategoryID, ingJSON, in.StepsHTML, now,
 		in.ICloudNoteID, in.ICloudEtag, in.OwnerID, newRev, id); err != nil {
-		return err
+		return nil, err
 	}
 	if contentChanged {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM recipe_embeddings WHERE recipe_id = ?`, id); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := ftsUpsert(ctx, tx, id, in.Title, in.Ingredients, in.StepsHTML); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit()
+	var removed []string
+	if images != nil {
+		if removed, err = reconcileImagesTx(ctx, tx, id, images); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return removed, nil
 }
 
 // DeleteRecipe removes a recipe, its images rows (via cascade) and its FTS entry.
-// It returns the image filenames that were attached so callers can delete files.
+// It returns the filenames that were attached and no other recipe references,
+// so callers can delete the files.
 func (s *Store) DeleteRecipe(ctx context.Context, id int64) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -166,6 +199,9 @@ func (s *Store) DeleteRecipe(ctx context.Context, id int64) ([]string, error) {
 		return nil, ErrNotFound
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM recipes_fts WHERE rowid = ?`, id); err != nil {
+		return nil, err
+	}
+	if files, err = unreferencedTx(ctx, tx, files); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

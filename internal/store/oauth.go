@@ -71,6 +71,48 @@ func (s *Store) DeleteUnusedOAuthClients(ctx context.Context, cutoff time.Time) 
 	return res.RowsAffected()
 }
 
+// CreateOAuthClientCapped registers a client while keeping at most max
+// clients: at the cap it first removes the oldest client holding no grant and
+// no pending code, and fails with ErrClientLimit when every client is in use.
+// Counting, eviction and insertion happen in one transaction.
+func (s *Store) CreateOAuthClientCapped(ctx context.Context, c models.OAuthClient, max int) error {
+	uris, err := json.Marshal(c.RedirectURIs)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Write first so the transaction holds SQLite's write lock while counting.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO oauth_clients (id, name, redirect_uris, created_at) VALUES (?, ?, ?, ?)`,
+		c.ID, c.Name, string(uris), fmtTime(c.CreatedAt)); err != nil {
+		return err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_clients`).Scan(&n); err != nil {
+		return err
+	}
+	if n > max {
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM oauth_clients WHERE id = (
+			  SELECT id FROM oauth_clients
+			  WHERE id != ?
+			    AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = oauth_clients.id)
+			    AND NOT EXISTS (SELECT 1 FROM oauth_codes k WHERE k.client_id = oauth_clients.id)
+			  ORDER BY created_at, rowid LIMIT 1)`, c.ID)
+		if err != nil {
+			return err
+		}
+		if evicted, _ := res.RowsAffected(); evicted == 0 {
+			return ErrClientLimit
+		}
+	}
+	return tx.Commit()
+}
+
 // SaveOAuthCode stores a pending authorization code.
 func (s *Store) SaveOAuthCode(ctx context.Context, c models.OAuthCode) error {
 	_, err := s.db.ExecContext(ctx, `

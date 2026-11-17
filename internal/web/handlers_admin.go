@@ -348,6 +348,8 @@ func (s *Server) recipeSaveError(w http.ResponseWriter, r *http.Request, rec *mo
 		f.Error = "Выберите или введите категорию"
 	case errors.Is(err, cookbook.ErrForeignImage):
 		f.Error = "Изображение уже используется в другом рецепте"
+	case errors.Is(err, cookbook.ErrMissingImage):
+		f.Error = "Изображение больше не доступно — вставьте его заново"
 	case errors.Is(err, store.ErrConflict):
 		f.Error = "Рецепт был изменён одновременно с вами — обновите страницу и повторите правку"
 	case errors.Is(err, store.ErrNotFound):

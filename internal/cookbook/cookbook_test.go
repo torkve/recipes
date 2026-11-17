@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"recipes/internal/models"
 	"recipes/internal/store"
@@ -231,6 +232,66 @@ func TestSharedLegacyImageIsForeignToBoth(t *testing.T) {
 	for _, id := range ids {
 		if _, err := svc.Update(ctx, id, Patch{StepsHTML: &tag}, nil); !errors.Is(err, ErrForeignImage) {
 			t.Errorf("recipe %d: err = %v, want ErrForeignImage", id, err)
+		}
+	}
+}
+
+func TestMissingNewImageIsRejected(t *testing.T) {
+	svc, _, dir := newTestService(t)
+	ctx := context.Background()
+	tag := upload(t, dir, imgA)
+	rec, err := svc.Create(ctx, Draft{Title: "A", Category: CategoryRef{Name: "Супы"}, StepsHTML: tag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := `<img src="/uploads/` + imgB + `" alt="">`
+	if _, err := svc.Create(ctx, Draft{Title: "B", Category: CategoryRef{Name: "Супы"}, StepsHTML: missing}); !errors.Is(err, ErrMissingImage) {
+		t.Fatalf("create with a missing upload: err = %v", err)
+	}
+	// An already-attached image whose file vanished does not block edits.
+	if err := os.Remove(filepath.Join(dir, imgA)); err != nil {
+		t.Fatal(err)
+	}
+	title := "A2"
+	if _, err := svc.Update(ctx, rec.ID, Patch{Title: &title}, nil); err != nil {
+		t.Fatalf("editing a recipe with a vanished attached image: %v", err)
+	}
+	steps := tag + missing
+	if _, err := svc.Update(ctx, rec.ID, Patch{StepsHTML: &steps}, nil); !errors.Is(err, ErrMissingImage) {
+		t.Fatalf("update adding a missing upload: err = %v", err)
+	}
+}
+
+func TestSweepOrphanUploads(t *testing.T) {
+	svc, _, dir := newTestService(t)
+	ctx := context.Background()
+	tag := upload(t, dir, imgA)
+	if _, err := svc.Create(ctx, Draft{Title: "С картинкой", Category: CategoryRef{Name: "Супы"}, StepsHTML: tag}); err != nil {
+		t.Fatal(err)
+	}
+	upload(t, dir, imgB) // unattached
+	const fresh = "cccccccc-cccc-4ccc-8ccc-cccccccccccc.png"
+	upload(t, dir, fresh)
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	for _, n := range []string{imgA, imgB, "README"} {
+		if err := os.Chtimes(filepath.Join(dir, n), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := svc.SweepOrphanUploads(ctx, 24*time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("SweepOrphanUploads = %d, %v; want 1", n, err)
+	}
+	if exists(dir, imgB) {
+		t.Error("old unattached upload survived")
+	}
+	for _, keep := range []string{imgA, fresh} {
+		if !exists(dir, keep) {
+			t.Errorf("%s was swept", keep)
 		}
 	}
 }

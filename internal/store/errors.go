@@ -18,4 +18,10 @@ var (
 	// ErrTokenReuse is returned when an already-rotated refresh token is
 	// presented again; the grant it belonged to has been revoked.
 	ErrTokenReuse = errors.New("store: refresh token reused")
+	// ErrForeignImage is returned when a recipe write would attach an image
+	// that is attached to another recipe.
+	ErrForeignImage = errors.New("store: image belongs to another recipe")
+	// ErrClientLimit is returned when registering an OAuth client would exceed
+	// the client cap and no unused client can be evicted.
+	ErrClientLimit = errors.New("store: OAuth client limit reached")
 )

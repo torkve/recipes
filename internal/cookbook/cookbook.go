@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -27,7 +29,10 @@ var (
 	ErrCategoryRequired = errors.New("cookbook: category required")
 	// ErrForeignImage is returned when the steps reference an uploaded image that
 	// belongs to a different recipe.
-	ErrForeignImage = errors.New("cookbook: image belongs to another recipe")
+	ErrForeignImage = store.ErrForeignImage
+	// ErrMissingImage is returned when the steps newly reference an upload
+	// that has no file in the uploads directory.
+	ErrMissingImage = errors.New("cookbook: image file no longer exists")
 )
 
 // CategoryRef selects a category: by Name (created when missing; takes
@@ -67,21 +72,20 @@ func New(st *store.Store, uploadsDir string) *Service {
 }
 
 // Create validates and stores a new recipe, attaching the uploads its steps
-// reference.
+// reference in the same transaction.
 func (s *Service) Create(ctx context.Context, d Draft) (*models.Recipe, error) {
-	in, err := s.prepare(ctx, 0, d.Title, d.Category, d.Ingredients, d.StepsHTML)
+	in, err := s.prepare(ctx, d.Title, d.Category, d.Ingredients, d.StepsHTML)
 	if err != nil {
 		return nil, err
 	}
 	in.OwnerID = d.OwnerID
-	rec, err := s.store.CreateRecipe(ctx, in)
-	if err != nil {
+	images := referencedImages(in.StepsHTML)
+	uploadsMu.RLock()
+	defer uploadsMu.RUnlock()
+	if err := s.checkNewImagesExist(images, nil); err != nil {
 		return nil, err
 	}
-	if err := s.reconcileImages(ctx, rec.ID, in.StepsHTML); err != nil {
-		return nil, err
-	}
-	return s.store.GetRecipe(ctx, rec.ID)
+	return s.store.CreateRecipeWithImages(ctx, in, images)
 }
 
 // Update applies p to recipe id, keeping its iCloud linkage and owner. With
@@ -108,7 +112,7 @@ func (s *Service) Update(ctx context.Context, id int64, p Patch, expectedRevisio
 	if p.StepsHTML != nil {
 		steps = *p.StepsHTML
 	}
-	in, err := s.prepare(ctx, id, title, cat, ings, steps)
+	in, err := s.prepare(ctx, title, cat, ings, steps)
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +123,18 @@ func (s *Service) Update(ctx context.Context, id int64, p Patch, expectedRevisio
 	// edit that lands between GetRecipe above and this write.
 	rev := cur.Revision
 	in.ExpectedRevision = &rev
-	if err := s.store.UpdateRecipe(ctx, id, in); err != nil {
+	images := referencedImages(in.StepsHTML)
+	uploadsMu.RLock()
+	defer uploadsMu.RUnlock()
+	if err := s.checkNewImagesExist(images, cur.Images); err != nil {
 		return nil, err
 	}
-	if err := s.reconcileImages(ctx, id, in.StepsHTML); err != nil {
+	detached, err := s.store.UpdateRecipeWithImages(ctx, id, in, images)
+	if err != nil {
 		return nil, err
+	}
+	for _, name := range detached {
+		s.RemoveUpload(name)
 	}
 	return s.store.GetRecipe(ctx, id)
 }
@@ -149,9 +160,8 @@ func (s *Service) RemoveUpload(name string) {
 	_ = os.Remove(filepath.Join(s.uploadsDir, name))
 }
 
-// prepare validates and normalizes recipe fields into a store input. selfID is
-// the recipe being edited (0 for a new one), used for the image ownership check.
-func (s *Service) prepare(ctx context.Context, selfID int64, title string, cat CategoryRef, ings []models.IngredientBlock, stepsHTML string) (store.RecipeInput, error) {
+// prepare validates and normalizes recipe fields into a store input.
+func (s *Service) prepare(ctx context.Context, title string, cat CategoryRef, ings []models.IngredientBlock, stepsHTML string) (store.RecipeInput, error) {
 	in := store.RecipeInput{
 		Title:       strings.TrimSpace(title),
 		Ingredients: ings,
@@ -159,9 +169,6 @@ func (s *Service) prepare(ctx context.Context, selfID int64, title string, cat C
 	}
 	if in.Title == "" {
 		return in, ErrTitleRequired
-	}
-	if err := s.checkImageOwnership(ctx, selfID, in.StepsHTML); err != nil {
-		return in, err
 	}
 	catID, err := s.resolveCategory(ctx, cat)
 	if err != nil {
@@ -189,19 +196,6 @@ func (s *Service) resolveCategory(ctx context.Context, ref CategoryRef) (int64, 
 		return 0, err
 	}
 	return ref.ID, nil
-}
-
-// checkImageOwnership returns ErrForeignImage when the steps reference an upload
-// attached to a recipe other than selfID. Unattached uploads (fresh pastes) pass.
-func (s *Service) checkImageOwnership(ctx context.Context, selfID int64, stepsHTML string) error {
-	foreign, err := s.store.ImagesAttachedElsewhere(ctx, selfID, sanitize.ImageFilenames(stepsHTML))
-	if err != nil {
-		return err
-	}
-	if len(foreign) > 0 {
-		return fmt.Errorf("%w: %s", ErrForeignImage, strings.Join(foreign, ", "))
-	}
-	return nil
 }
 
 // MaxUploadBytes is the size limit of one uploaded image.
@@ -248,38 +242,82 @@ var typeByExt = map[string]string{
 	".webp": "image/webp",
 }
 
-// reconcileImages makes recipe_images match the images referenced in the saved
-// steps HTML: it records referenced uploads missing from recipe_images and
-// deletes the rows and files of attached uploads the steps do not reference.
-func (s *Service) reconcileImages(ctx context.Context, recipeID int64, html string) error {
-	referenced := sanitize.ImageFilenames(html)
-	refSet := make(map[string]bool, len(referenced))
-	for _, n := range referenced {
-		refSet[n] = true
+// referencedImages returns the uploads referenced by sanitized steps HTML, as
+// image rows to attach (never nil, so an empty result detaches every image).
+func referencedImages(html string) []models.RecipeImage {
+	names := sanitize.ImageFilenames(html)
+	out := make([]models.RecipeImage, 0, len(names))
+	for _, name := range names {
+		out = append(out, models.RecipeImage{Filename: name, ContentType: typeByExt[strings.ToLower(filepath.Ext(name))]})
 	}
+	return out
+}
 
-	existing, err := s.store.ImagesForRecipe(ctx, recipeID)
-	if err != nil {
-		return err
+// uploadsMu orders recipe saves against the orphan sweep within the process:
+// saves hold it shared from checking their new images' files to committing,
+// the sweep holds it exclusively, so the sweep never deletes a file that a
+// save is attaching. It is package-level because every Service instance
+// shares the one uploads directory.
+var uploadsMu sync.RWMutex
+
+// checkNewImagesExist returns ErrMissingImage when an image in images that is
+// not already in attached has no file. The caller holds uploadsMu.
+func (s *Service) checkNewImagesExist(images, attached []models.RecipeImage) error {
+	have := make(map[string]bool, len(attached))
+	for _, img := range attached {
+		have[img.Filename] = true
 	}
-	existingSet := make(map[string]bool, len(existing))
-	for _, img := range existing {
-		existingSet[img.Filename] = true
-		if !refSet[img.Filename] {
-			if err := s.store.DeleteImageByName(ctx, recipeID, img.Filename); err != nil {
-				return err
-			}
-			s.RemoveUpload(img.Filename)
+	for _, img := range images {
+		if have[img.Filename] {
+			continue
 		}
-	}
-	for _, name := range referenced {
-		if !existingSet[name] {
-			existingSet[name] = true // a name referenced twice is recorded once
-			ct := typeByExt[strings.ToLower(filepath.Ext(name))]
-			if _, err := s.store.AddImage(ctx, recipeID, name, ct); err != nil {
-				return err
-			}
+		if _, err := os.Stat(filepath.Join(s.uploadsDir, img.Filename)); err != nil {
+			return fmt.Errorf("%w: %s", ErrMissingImage, img.Filename)
 		}
 	}
 	return nil
+}
+
+// isGeneratedUpload reports whether name has the shape of an upload this
+// service stores: a UUID followed by a supported image extension.
+func isGeneratedUpload(name string) bool {
+	ext := filepath.Ext(name)
+	if _, ok := typeByExt[ext]; !ok {
+		return false
+	}
+	_, err := uuid.Parse(strings.TrimSuffix(name, ext))
+	return err == nil
+}
+
+// SweepOrphanUploads deletes uploaded images (UUID-named image files in the
+// uploads directory) that no recipe references and that were last modified
+// before now minus minAge, returning how many it deleted. minAge must leave
+// time for a fresh upload to be saved into a recipe.
+func (s *Service) SweepOrphanUploads(ctx context.Context, minAge time.Duration) (int, error) {
+	uploadsMu.Lock()
+	defer uploadsMu.Unlock()
+	attached, err := s.store.AllImageFilenames(ctx)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(s.uploadsDir)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-minAge)
+	n := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || attached[name] || !isGeneratedUpload(name) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.uploadsDir, name)); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }

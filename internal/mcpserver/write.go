@@ -154,6 +154,8 @@ func writeError(err error, id int64) error {
 		return errors.New("a category is required: pass an existing category_id or a category name")
 	case errors.Is(err, cookbook.ErrForeignImage):
 		return errors.New("the steps reference an image that belongs to another recipe; remove it")
+	case errors.Is(err, cookbook.ErrMissingImage):
+		return errors.New("an image in the steps is no longer available; upload it again with upload_image")
 	case errors.Is(err, store.ErrConflict):
 		return fmt.Errorf("recipe %d was changed since expected_revision; call get_recipe again and reapply your change", id)
 	case errors.Is(err, store.ErrNotFound):

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"recipes/internal/cattree"
 	"recipes/internal/models"
 	"recipes/internal/sanitize"
 	"recipes/internal/store"
@@ -30,8 +31,8 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(c, 10, 64); err == nil && id > 0 {
 			selected = id
 			// Filter by the whole subtree so a parent lists its descendants' recipes.
-			filter = categoryDescendantIDs(cats, id)
-			breadcrumbs = categoryPath(cats, id)
+			filter = cattree.DescendantIDs(cats, id)
+			breadcrumbs = cattree.Path(cats, id)
 		}
 	}
 

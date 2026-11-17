@@ -45,6 +45,7 @@ ADMIN_USERNAME=admin ADMIN_PASSWORD=secret "$GO" run ./cmd/recipes
 | `RECIPES_DATA_DIR`               | `./data`                         | Каталог БД, загрузок и сессий (бэкапить его)                                   |
 | `RECIPES_SITE_NAME`              | `Семейная кулинарная книга`      | Название сайта в шапке                                                         |
 | `RECIPES_SECURE_COOKIES`         | `false`                          | Помечать cookie как Secure (только HTTPS)                                      |
+| `RECIPES_PUBLIC_URL`             | — (пусто)                        | Публичный https-адрес сайта без пути; включает MCP-эндпоинт `/mcp`             |
 | `ADMIN_USERNAME`                 | —                                | Логин первого администратора (bootstrap)                                       |
 | `ADMIN_PASSWORD`                 | —                                | Пароль первого администратора (bootstrap)                                      |
 | `RECIPES_ICLOUD_ENABLED`         | `false`                          | Включить синхронизацию с iCloud (см. ниже)                                     |

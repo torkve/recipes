@@ -114,28 +114,6 @@ func TestCategoryTree(t *testing.T) {
 	}
 }
 
-func TestCategoryPathAndDescendants(t *testing.T) {
-	one, two := int64(1), int64(2)
-	cats := []models.Category{
-		{ID: 1, Name: "Супы"},
-		{ID: 2, Name: "Холодные", ParentID: &one},
-		{ID: 3, Name: "Гаспачо", ParentID: &two},
-		{ID: 4, Name: "Десерты"},
-	}
-	path := categoryPath(cats, 3) // root -> leaf
-	if len(path) != 3 || path[0].ID != 1 || path[1].ID != 2 || path[2].ID != 3 {
-		t.Fatalf("categoryPath(3) = %+v, want [1 2 3]", path)
-	}
-	ds := categoryDescendantIDs(cats, 1) // 1 + all descendants
-	set := map[int64]bool{}
-	for _, id := range ds {
-		set[id] = true
-	}
-	if len(ds) != 3 || !set[1] || !set[2] || !set[3] || set[4] {
-		t.Fatalf("categoryDescendantIDs(1) = %v, want {1,2,3}", ds)
-	}
-}
-
 func TestHomeParentFilterIncludesSubcategories(t *testing.T) {
 	ts, st := testServer(t)
 	ctx := context.Background()

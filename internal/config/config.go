@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,6 +56,12 @@ type Config struct {
 	EmbedDim int
 	// EmbedBackfillMinutes is how often the backfill worker indexes new recipes.
 	EmbedBackfillMinutes int
+	// PublicURL is the externally visible base URL of the site (scheme://host,
+	// no trailing slash), e.g. "https://recipes.example.com". It is the MCP
+	// resource identifier and OAuth issuer and the base of absolute links handed
+	// to MCP clients. Empty disables the MCP endpoint.
+	PublicURL string
+
 	// EmbedMinScore is the minimum cosine similarity for a semantic hit to count;
 	// the main relevance knob. Raise toward 0.84–0.88 if results are too broad,
 	// lower if too few. e5 cosine scores cluster high, so small changes matter.
@@ -99,7 +106,42 @@ func Load() (*Config, error) {
 	if c.DataDir == "" {
 		return nil, fmt.Errorf("config: RECIPES_DATA_DIR must not be empty")
 	}
+	pub, err := normalizePublicURL(os.Getenv("RECIPES_PUBLIC_URL"))
+	if err != nil {
+		return nil, fmt.Errorf("config: RECIPES_PUBLIC_URL: %w", err)
+	}
+	c.PublicURL = pub
 	return c, nil
+}
+
+// normalizePublicURL validates a site base URL and returns it as
+// scheme://host[:port] without a trailing slash; "" stays "". It must be https,
+// or http on a loopback host, and carry no path, query, fragment or userinfo.
+func normalizePublicURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return "", fmt.Errorf("%q must be scheme://host with nothing else", raw)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("%q must not have a path: the site runs at the host root", raw)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if h := u.Hostname(); h != "localhost" && h != "127.0.0.1" && h != "::1" {
+			return "", fmt.Errorf("%q must use https (http is allowed only for localhost)", raw)
+		}
+	default:
+		return "", fmt.Errorf("%q must use https", raw)
+	}
+	return u.Scheme + "://" + strings.ToLower(u.Host), nil
 }
 
 func env(key, def string) string {
